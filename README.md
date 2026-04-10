@@ -6,6 +6,16 @@ Slack-based assistant for staffing decisions. Product logic is defined in Notion
 
 Track work in [GitHub Issues](https://github.com/lubovkatoloka/Staffing_Agent/issues).
 
+### LLM (Anthropic Opus)
+
+Default model is **Claude Opus** (`claude-opus-4-6` unless you set `ANTHROPIC_MODEL` in `.env`). Add `ANTHROPIC_API_KEY` from [Anthropic Console](https://console.anthropic.com/). If the API returns “model not found”, set `ANTHROPIC_MODEL` to an Opus id from the [models list](https://docs.anthropic.com/en/docs/about-claude/models) (e.g. a dated `claude-3-opus-…` snapshot).
+
+Verify:
+
+```bash
+python -m staffing_agent --check-llm
+```
+
 ### Notion (optional)
 
 To fetch titles/previews for `notion.so` links posted in a thread, create an [internal integration](https://www.notion.so/my-integration), copy the token into `.env` as `NOTION_TOKEN`, and **share the relevant Notion pages** with that integration (Share → Invite).
