@@ -85,11 +85,17 @@ def gather_notion_previews(
     return out
 
 
-def notion_excerpt_for_llm(messages: list[dict[str, Any]], max_chars: int = 6000) -> str:
-    """Plain text blob for Anthropic (titles + previews)."""
+def notion_excerpt_for_llm(
+    messages: list[dict[str, Any]],
+    *,
+    previews: list[dict[str, Any]] | None = None,
+    max_chars: int = 6000,
+) -> str:
+    """Plain text blob for Anthropic (titles + previews). Pass `previews` to avoid a second Notion fetch."""
+    rows = previews if previews is not None else gather_notion_previews(messages)
     parts: list[str] = []
     total = 0
-    for row in gather_notion_previews(messages):
+    for row in rows:
         if row.get("error"):
             block = f"[Notion {row['page_id'][:8]}… error: {row['error']}]\n"
         else:
@@ -104,11 +110,15 @@ def notion_excerpt_for_llm(messages: list[dict[str, Any]], max_chars: int = 6000
     return "\n".join(parts).strip()
 
 
-def build_context_reply(messages: list[dict[str, Any]]) -> str:
-    """Full mrkdwn reply for Phase A (context only)."""
+def build_context_reply(
+    messages: list[dict[str, Any]],
+    *,
+    previews: list[dict[str, Any]] | None = None,
+) -> str:
+    """Full mrkdwn reply for Phase A (context only). Pass `previews` to reuse a single Notion fetch."""
     preview = format_thread_preview(messages)
     urls = collect_urls_from_messages(messages)
-    notion_token = (os.environ.get("NOTION_TOKEN") or "").strip()
+    rows = previews if previews is not None else gather_notion_previews(messages)
 
     lines: list[str] = [
         "*Staffing Agent — context (phase A)*",
@@ -118,7 +128,7 @@ def build_context_reply(messages: list[dict[str, Any]]) -> str:
 
     notion_sections: list[str] = []
     token_missing_shown = False
-    for row in gather_notion_previews(messages):
+    for row in rows:
         nid = row["page_id"]
         if row.get("error") == "NOTION_TOKEN not set":
             if not token_missing_shown:

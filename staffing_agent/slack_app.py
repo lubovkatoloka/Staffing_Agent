@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,7 @@ from staffing_agent.extraction import extract_request_spec
 from staffing_agent.thread_context import (
     build_context_reply,
     format_thread_preview,
+    gather_notion_previews,
     notion_excerpt_for_llm,
 )
 
@@ -137,8 +139,28 @@ def create_app() -> App:
             return
 
         thread_plain = format_thread_preview(messages)
-        notion_ex = notion_excerpt_for_llm(messages)
+        print(
+            "[staffing] Notion: fetching page previews for links in thread (if any; may take a few seconds)…",
+            file=sys.stderr,
+            flush=True,
+        )
+        previews = gather_notion_previews(messages)
+        notion_ex = notion_excerpt_for_llm(messages, previews=previews)
+        print(
+            f"[staffing] Phase B: extraction starting (thread={len(thread_plain)} chars, "
+            f"notion_excerpt={len(notion_ex)} chars). Anthropic can take 15–40s — not frozen.\n",
+            file=sys.stderr,
+            flush=True,
+        )
+        t0 = time.perf_counter()
         spec, src = extract_request_spec(thread_plain, notion_ex)
+        elapsed = time.perf_counter() - t0
+        print(
+            f"[staffing] Phase B: extraction done in {elapsed:.1f}s (source={src})\n",
+            file=sys.stderr,
+            flush=True,
+        )
+        logger.info("extraction finished in %.1fs source=%s", elapsed, src)
         src_label = {
             "mock": "mock (set ANTHROPIC_API_KEY; unset STAFFING_AGENT_MOCK_LLM)",
             "anthropic": "Anthropic Opus",
@@ -146,7 +168,7 @@ def create_app() -> App:
         }.get(src, src)
 
         reply = (
-            build_context_reply(messages)
+            build_context_reply(messages, previews=previews)
             + f"\n\n*Phase B — extraction* _(source: {src_label})_\n"
             + spec.to_slack_block()
         )

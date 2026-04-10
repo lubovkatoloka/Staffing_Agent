@@ -99,6 +99,8 @@ The bot replies **in the same thread** with a **stub** that lists collected thre
 
 **Note:** After `Bolt app is running!` the terminal **does not return a new prompt** — the process waits for Slack. That is expected. Use another terminal tab for other commands. Stop the bot with **Ctrl+C**.
 
+When you `@mention` the bot, the terminal may look idle for **15–40 seconds** while **Anthropic Opus** runs (or while **Notion** pages load). You should see lines starting with `[staffing]` on stderr — that is normal, not a freeze.
+
 ## Layout
 
 - `staffing_agent/slack_app.py` — Bolt app, thread fetch, placeholder reply.
