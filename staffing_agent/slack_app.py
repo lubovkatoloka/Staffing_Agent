@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
+from slack_sdk import WebClient
 
 # Load `.env` from repo root (parent of `staffing_agent/`), not from shell cwd.
 _ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
@@ -85,6 +87,20 @@ def _format_thread_preview(messages: list[dict[str, Any]], max_chars: int = 3500
     return "\n".join(lines) if lines else "(empty thread)"
 
 
+def check_slack_connection() -> None:
+    """Quick test: tokens valid and API reachable (exits fast)."""
+    _check_env()
+    print("Calling Slack auth.test…", flush=True)
+    client = WebClient(token=os.environ["SLACK_BOT_TOKEN"])
+    resp = client.auth_test()
+    if not resp.get("ok"):
+        raise RuntimeError(resp)
+    print(
+        f"OK: bot user={resp.get('user')} team={resp.get('team')} url={resp.get('url')}",
+        flush=True,
+    )
+
+
 def create_app() -> App:
     _check_env()
     app = App(
@@ -153,14 +169,31 @@ def create_app() -> App:
 
 
 def run_socket_mode() -> None:
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(levelname)s %(name)s: %(message)s",
+        stream=sys.stderr,
+        force=True,
+    )
+    print("[1/4] Staffing Agent: loading env and checking tokens…", flush=True, file=sys.stderr)
     print(
         "\n=== Staffing Agent (local) ===\n"
-        "The shell will show no prompt until you press Ctrl+C — that is normal.\n"
-        "Leave this running, @mention the bot in Slack; new lines will appear here.\n",
+        "After step [4/4] this terminal will show no shell prompt until Ctrl+C — that is normal.\n"
+        "Leave it running, @mention the bot in Slack; logs appear on stderr.\n",
         flush=True,
+        file=sys.stderr,
     )
+    print("[2/4] Building Bolt app (calls auth.test)…", flush=True, file=sys.stderr)
     app = create_app()
+    print("[3/4] Starting Socket Mode handler…", flush=True, file=sys.stderr)
     handler = SocketModeHandler(app, os.environ["SLACK_APP_TOKEN"])
     logging.getLogger(__name__).info("Socket Mode handler starting (Ctrl+C to stop)…")
-    handler.start()
+    print(
+        "[4/4] Connected — waiting for Slack events. Try @your_bot in a channel.\n",
+        flush=True,
+        file=sys.stderr,
+    )
+    try:
+        handler.start()
+    except KeyboardInterrupt:
+        print("\nStopped.", flush=True, file=sys.stderr)

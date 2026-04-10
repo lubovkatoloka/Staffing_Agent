@@ -50,8 +50,11 @@ If the bot still says the token is wrong but you pasted full values: your shell 
 ```bash
 cd "/Users/liubakarpova/Documents/Staffing Agent"
 source .venv/bin/activate
-python -m staffing_agent
+python -m staffing_agent --check   # fast: only tests tokens (optional)
+python -m staffing_agent           # long-running: Socket Mode
 ```
+
+If the terminal seems to print nothing, run **`--check`** first. Logs from the bot go to **stderr**; you should see steps `[1/4]` … `[4/4]`.
 
 Or from any directory:
 
