@@ -29,6 +29,10 @@ pip install -r requirements.txt
    - For private channels add `groups:history`.
 5. **Install to workspace** → copy **Bot User OAuth Token** → `SLACK_BOT_TOKEN` (`xoxb-…`).
 6. **Basic Information** → **Signing Secret** → `SLACK_SIGNING_SECRET`.
+7. **Event Subscriptions** (required, or the bot never sees `@mentions`):
+   - Turn **Enable Events** **ON**.
+   - Under **Subscribe to bot events**, add **`app_mention`** (and click **Save Changes**).
+   - Without this, Socket Mode connects but nothing triggers your handler.
 
 ### 3. Environment
 
@@ -55,7 +59,9 @@ Or from any directory:
 "/Users/liubakarpova/Documents/Staffing Agent/run_local.sh"
 ```
 
-Invite the bot to a channel, then mention it in a thread. It replies in the thread with a **stub** that lists collected thread text (later: Decision Logic + Databricks).
+Invite the bot: `/invite @YourBotName` in the channel. In Slack you must **@mention the bot** in the message (e.g. `@who_is_available hello`) — plain text without `@` does not fire `app_mention`.
+
+The bot replies **in the same thread** with a **stub** that lists collected thread text. If nothing happens, check the terminal: you should see `app_mention received`. If you see no log line, fix **Event Subscriptions → `app_mention`** above. For more detail run with `STAFFING_AGENT_DEBUG=1 python -m staffing_agent`.
 
 Press **Ctrl+C** to stop.
 

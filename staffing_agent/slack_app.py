@@ -92,8 +92,30 @@ def create_app() -> App:
         signing_secret=os.environ["SLACK_SIGNING_SECRET"],
     )
 
+    @app.middleware
+    def log_request(logger: logging.Logger, body: dict[str, Any], next: Any) -> Any:
+        """See which events reach the app (debug: set STAFFING_AGENT_DEBUG=1)."""
+        if os.environ.get("STAFFING_AGENT_DEBUG") == "1":
+            ev = body.get("event") or {}
+            logger.info(
+                "incoming event type=%s subtype=%s channel=%s",
+                ev.get("type"),
+                ev.get("subtype"),
+                ev.get("channel"),
+            )
+        return next()
+
+    @app.error
+    def global_error(error: Exception, body: dict[str, Any], logger: logging.Logger) -> None:
+        logger.exception("Bolt error: %s body_keys=%s", error, list(body.keys()) if body else [])
+
     @app.event("app_mention")
     def on_mention(event: dict[str, Any], client: Any, logger: logging.Logger) -> None:
+        logger.info(
+            "app_mention received channel=%s thread/root_ts=%s",
+            event.get("channel"),
+            _thread_ts(event),
+        )
         channel = event["channel"]
         root_ts = _thread_ts(event)
 
@@ -117,7 +139,15 @@ def create_app() -> App:
             f"{preview}\n"
             "```"
         )
-        client.chat_postMessage(channel=channel, thread_ts=root_ts, text=reply)
+        # Slack chat.postMessage text field limit (~40k; keep reasonable)
+        if len(reply) > 12000:
+            reply = reply[:11900] + "\n```\n… (truncated)"
+
+        try:
+            client.chat_postMessage(channel=channel, thread_ts=root_ts, text=reply)
+        except Exception as e:
+            logger.exception("chat_postMessage failed: %s", e)
+            raise
 
     return app
 
