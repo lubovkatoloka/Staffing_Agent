@@ -23,6 +23,23 @@ def _check_env() -> None:
         raise SystemExit(
             f"Missing env vars: {', '.join(missing)}. Copy .env.example → .env and fill values."
         )
+    bot = os.environ["SLACK_BOT_TOKEN"].strip()
+    secret = os.environ["SLACK_SIGNING_SECRET"].strip()
+    app_tok = os.environ["SLACK_APP_TOKEN"].strip()
+    if not bot.startswith("xoxb-") or len(bot) < 40:
+        raise SystemExit(
+            "SLACK_BOT_TOKEN looks wrong: paste the full Bot User OAuth Token from "
+            "OAuth & Permissions (after Install to Workspace), not the placeholder xoxb-..."
+        )
+    if len(secret) < 16:
+        raise SystemExit(
+            "SLACK_SIGNING_SECRET looks too short: copy the full Signing Secret from Basic Information."
+        )
+    if not app_tok.startswith("xapp-") or len(app_tok) < 40:
+        raise SystemExit(
+            "SLACK_APP_TOKEN looks wrong: create an App-Level Token with scope connections:write "
+            "(Basic Information → App-Level Tokens)."
+        )
 
 
 def _thread_ts(event: dict[str, Any]) -> str:

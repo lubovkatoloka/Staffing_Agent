@@ -39,9 +39,18 @@ cp .env.example .env
 
 ### 4. Run
 
+**Always run from the project root** (the folder that contains `staffing_agent/`). If you start the terminal elsewhere, `python -m staffing_agent` will not find the package.
+
 ```bash
+cd "/Users/liubakarpova/Documents/Staffing Agent"
 source .venv/bin/activate
 python -m staffing_agent
+```
+
+Or from any directory:
+
+```bash
+"/Users/liubakarpova/Documents/Staffing Agent/run_local.sh"
 ```
 
 Invite the bot to a channel, then mention it in a thread. It replies in the thread with a **stub** that lists collected thread text (later: Decision Logic + Databricks).
