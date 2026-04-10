@@ -15,7 +15,9 @@ python -m pytest tests/ -q
 
 ### Mock LLM (no Anthropic key)
 
-If `ANTHROPIC_API_KEY` is unset (or `STAFFING_AGENT_MOCK_LLM=1`), extraction uses a **mock** `RequestSpec` so Slack still works. Thresholds live in `config/thresholds.yaml`.
+If `ANTHROPIC_API_KEY` is unset (or `STAFFING_AGENT_MOCK_LLM=1`), extraction uses a **mock** `RequestSpec` so Slack still works.
+
+**Decision Logic (Notion → code):** rules and bands live in `config/decision_logic.yaml`. Availability tiers are implemented in `staffing_agent/decision/` (`classify_availability`, tests in `tests/test_decision_availability.py`). Keep YAML in sync with the [Notion spec](https://www.notion.so/toloka-ai/Staffing-Agent-Decision-Logic-v1-0-32749d0688568183af3bf80ff6aedfd4).
 
 ### LLM (Anthropic Opus)
 

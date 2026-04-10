@@ -1,9 +1,0 @@
-# Aligns with Staffing Agent — Decision Logic v1.0 (occupation bands).
-# https://www.notion.so/toloka-ai/Staffing-Agent-Decision-Logic-v1-0-32749d0688568183af3bf80ff6aedfd4
-
-spec_version: "1.0"
-
-# Total occupation (project + PTO) as fraction 0..1
-occupation:
-  free_below: 0.5      # < 50% → FREE
-  partial_below: 0.8   # 50%–80% → PARTIAL; ≥ 80% → BUSY

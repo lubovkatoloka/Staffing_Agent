@@ -1,0 +1,29 @@
+# Staffing Agent — Decision Logic v1.0 (encoded for tests & runtime).
+# Source of truth for product nuance remains Notion; keep versions in sync.
+# https://www.notion.so/toloka-ai/Staffing-Agent-Decision-Logic-v1-0-32749d0688568183af3bf80ff6aedfd4
+
+spec_version: "1.0"
+notion_spec_url: "https://www.notion.so/toloka-ai/Staffing-Agent-Decision-Logic-v1-0-32749d0688568183af3bf80ff6aedfd4"
+
+# Total occupation = project_occupation + pto_coefficient (pto_days_this_week / 5), all 0..1
+occupation:
+  free_below: 0.5       # < 50% → FREE (unless UNVERIFIED / SOFT / PTO rules apply)
+  partial_below: 0.8    # 50% ≤ occ < 80% → PARTIAL; ≥ 80% → BUSY
+
+# "SOFT" row: discovery / blocked_client / close_out — discuss release with PM
+soft_assignment:
+  stages:
+    - discovery
+    - close_out_retrospective
+  statuses:
+    - BLOCKED_CLIENT
+
+# Zero occupation skepticism: 0% and 0 active projects → UNVERIFIED (not FREE)
+unverified:
+  when_occupation_zero: true
+  when_active_projects_zero: true
+
+# Full-week PTO (5/5 working days): treat as PTO — excluded from staffing cycle (caller may skip)
+pto:
+  full_week_days: 5
+  working_days_per_week: 5
