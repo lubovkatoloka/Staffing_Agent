@@ -13,6 +13,8 @@ from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 from slack_sdk import WebClient
 
+from staffing_agent.thread_context import build_context_reply
+
 # Load `.env` from repo root (parent of `staffing_agent/`), not from shell cwd.
 _ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
 load_dotenv(_ENV_PATH, override=True)
@@ -68,23 +70,6 @@ def _collect_thread_messages(client: Any, channel: str, root_ts: str) -> list[di
             break
     out.sort(key=lambda m: float(m.get("ts", "0")))
     return out
-
-
-def _format_thread_preview(messages: list[dict[str, Any]], max_chars: int = 3500) -> str:
-    lines: list[str] = []
-    total = 0
-    for m in messages:
-        uid = m.get("user") or "?"
-        text = (m.get("text") or "").strip()
-        if not text:
-            continue
-        line = f"<@{uid}>: {text}"
-        if total + len(line) + 1 > max_chars:
-            lines.append("… (truncated)")
-            break
-        lines.append(line)
-        total += len(line) + 1
-    return "\n".join(lines) if lines else "(empty thread)"
 
 
 def check_slack_connection() -> None:
@@ -146,18 +131,7 @@ def create_app() -> App:
             )
             return
 
-        preview = _format_thread_preview(messages)
-        # Stub: later plug Decision Logic + Databricks here
-        reply = (
-            "*Staffing Agent (local stub)*\n"
-            f"_Messages in thread:_ {len(messages)}\n"
-            "```\n"
-            f"{preview}\n"
-            "```"
-        )
-        # Slack chat.postMessage text field limit (~40k; keep reasonable)
-        if len(reply) > 12000:
-            reply = reply[:11900] + "\n```\n… (truncated)"
+        reply = build_context_reply(messages)
 
         try:
             client.chat_postMessage(channel=channel, thread_ts=root_ts, text=reply)

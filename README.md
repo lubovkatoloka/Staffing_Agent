@@ -6,6 +6,10 @@ Slack-based assistant for staffing decisions. Product logic is defined in Notion
 
 Track work in [GitHub Issues](https://github.com/lubovkatoloka/Staffing_Agent/issues).
 
+### Notion (optional)
+
+To fetch titles/previews for `notion.so` links posted in a thread, create an [internal integration](https://www.notion.so/my-integration), copy the token into `.env` as `NOTION_TOKEN`, and **share the relevant Notion pages** with that integration (Share → Invite).
+
 ## Local development
 
 ### 1. Python 3.11+
