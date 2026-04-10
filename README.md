@@ -63,7 +63,7 @@ Invite the bot: `/invite @YourBotName` in the channel. In Slack you must **@ment
 
 The bot replies **in the same thread** with a **stub** that lists collected thread text. If nothing happens, check the terminal: you should see `app_mention received`. If you see no log line, fix **Event Subscriptions → `app_mention`** above. For more detail run with `STAFFING_AGENT_DEBUG=1 python -m staffing_agent`.
 
-Press **Ctrl+C** to stop.
+**Note:** After `Bolt app is running!` the terminal **does not return a new prompt** — the process waits for Slack. That is expected. Use another terminal tab for other commands. Stop the bot with **Ctrl+C**.
 
 ## Layout
 

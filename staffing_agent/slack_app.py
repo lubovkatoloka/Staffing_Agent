@@ -154,6 +154,12 @@ def create_app() -> App:
 
 def run_socket_mode() -> None:
     logging.basicConfig(level=logging.INFO)
+    print(
+        "\n=== Staffing Agent (local) ===\n"
+        "The shell will show no prompt until you press Ctrl+C — that is normal.\n"
+        "Leave this running, @mention the bot in Slack; new lines will appear here.\n",
+        flush=True,
+    )
     app = create_app()
     handler = SocketModeHandler(app, os.environ["SLACK_APP_TOKEN"])
     logging.getLogger(__name__).info("Socket Mode handler starting (Ctrl+C to stop)…")
