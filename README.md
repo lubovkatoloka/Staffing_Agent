@@ -54,7 +54,13 @@ python -m staffing_agent --check   # fast: only tests tokens (optional)
 python -m staffing_agent           # long-running: Socket Mode
 ```
 
-If the terminal seems to print nothing, run **`--check`** first. Logs from the bot go to **stderr**; you should see steps `[1/4]` … `[4/4]`.
+If the terminal seems to print nothing:
+
+1. Run **`python -m staffing_agent --check`** — should finish in ~1s.
+2. Open **`Staffing Agent/.staffing_agent_debug.log`** in the repo (the app appends lines here on every start, even if the terminal hides stderr).
+3. Use **Terminal.app** instead of the IDE terminal, or run: `python -u -m staffing_agent`.
+
+Logs from the bot go to **stderr**; you should see steps `[1/4]` … `[4/4]` when the full bot starts.
 
 Or from any directory:
 

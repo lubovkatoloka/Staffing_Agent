@@ -1,4 +1,5 @@
 .cursor/
+.staffing_agent_debug.log
 .DS_Store
 .env
 .env.*
