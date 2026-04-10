@@ -37,6 +37,8 @@ cp .env.example .env
 # edit .env with the three values above
 ```
 
+If the bot still says the token is wrong but you pasted full values: your shell may have old `SLACK_*` exports. Run `unset SLACK_BOT_TOKEN SLACK_SIGNING_SECRET SLACK_APP_TOKEN` and try again. The app loads `.env` with **override** so file values take precedence.
+
 ### 4. Run
 
 **Always run from the project root** (the folder that contains `staffing_agent/`). If you start the terminal elsewhere, `python -m staffing_agent` will not find the package.

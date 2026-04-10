@@ -10,7 +10,8 @@ from dotenv import load_dotenv
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 
-load_dotenv()
+# `.env` must win over stale exports in the shell (dotenv default is override=False).
+load_dotenv(override=True)
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +30,8 @@ def _check_env() -> None:
     if not bot.startswith("xoxb-") or len(bot) < 40:
         raise SystemExit(
             "SLACK_BOT_TOKEN looks wrong: paste the full Bot User OAuth Token from "
-            "OAuth & Permissions (after Install to Workspace), not the placeholder xoxb-..."
+            "OAuth & Permissions (after Install to Workspace), not the placeholder xoxb-...\n"
+            "If .env is correct, run: unset SLACK_BOT_TOKEN SLACK_SIGNING_SECRET SLACK_APP_TOKEN"
         )
     if len(secret) < 16:
         raise SystemExit(
