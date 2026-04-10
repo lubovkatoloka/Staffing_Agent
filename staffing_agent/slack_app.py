@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 
-# `.env` must win over stale exports in the shell (dotenv default is override=False).
-load_dotenv(override=True)
+# Load `.env` from repo root (parent of `staffing_agent/`), not from shell cwd.
+_ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
+load_dotenv(_ENV_PATH, override=True)
 
 logger = logging.getLogger(__name__)
 
