@@ -13,7 +13,12 @@ from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 from slack_sdk import WebClient
 
-from staffing_agent.thread_context import build_context_reply
+from staffing_agent.extraction import extract_request_spec
+from staffing_agent.thread_context import (
+    build_context_reply,
+    format_thread_preview,
+    notion_excerpt_for_llm,
+)
 
 # Load `.env` from repo root (parent of `staffing_agent/`), not from shell cwd.
 _ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
@@ -131,7 +136,22 @@ def create_app() -> App:
             )
             return
 
-        reply = build_context_reply(messages)
+        thread_plain = format_thread_preview(messages)
+        notion_ex = notion_excerpt_for_llm(messages)
+        spec, src = extract_request_spec(thread_plain, notion_ex)
+        src_label = {
+            "mock": "mock (set ANTHROPIC_API_KEY; unset STAFFING_AGENT_MOCK_LLM)",
+            "anthropic": "Anthropic Opus",
+            "error": "error",
+        }.get(src, src)
+
+        reply = (
+            build_context_reply(messages)
+            + f"\n\n*Phase B — extraction* _(source: {src_label})_\n"
+            + spec.to_slack_block()
+        )
+        if len(reply) > 12000:
+            reply = reply[:11900] + "\n```\n… (truncated)"
 
         try:
             client.chat_postMessage(channel=channel, thread_ts=root_ts, text=reply)

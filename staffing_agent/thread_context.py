@@ -47,6 +47,63 @@ def format_thread_preview(messages: list[dict[str, Any]], max_chars: int = 3500)
     return "\n".join(lines) if lines else "(empty thread)"
 
 
+def gather_notion_previews(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """
+    Fetch Notion page previews for notion.so URLs in thread (deduped).
+    Each item: {page_id, title, preview, error?}
+    """
+    urls = collect_urls_from_messages(messages)
+    notion_token = (os.environ.get("NOTION_TOKEN") or "").strip()
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for u in urls:
+        nid = notion_page_id_from_url(u)
+        if not nid or nid in seen:
+            continue
+        seen.add(nid)
+        if not notion_token:
+            out.append(
+                {
+                    "page_id": nid,
+                    "title": "",
+                    "preview": "",
+                    "error": "NOTION_TOKEN not set",
+                }
+            )
+            continue
+        info = fetch_page_preview(notion_token, nid)
+        out.append(
+            {
+                "page_id": nid,
+                "title": info.get("title") or "",
+                "preview": (info.get("preview") or "").strip(),
+                "error": info.get("error"),
+            }
+        )
+    return out
+
+
+def notion_excerpt_for_llm(messages: list[dict[str, Any]], max_chars: int = 6000) -> str:
+    """Plain text blob for Anthropic (titles + previews)."""
+    parts: list[str] = []
+    total = 0
+    for row in gather_notion_previews(messages):
+        if row.get("error"):
+            block = f"[Notion {row['page_id'][:8]}… error: {row['error']}]\n"
+        else:
+            title = row.get("title") or "(untitled)"
+            prv = (row.get("preview") or "")[:3000]
+            block = f"## {title}\n{prv}\n"
+        if total + len(block) > max_chars:
+            parts.append("… (notion excerpt truncated)")
+            break
+        parts.append(block)
+        total += len(block)
+    return "\n".join(parts).strip()
+
+
 def build_context_reply(messages: list[dict[str, Any]]) -> str:
     """Full mrkdwn reply for Phase A (context only)."""
     preview = format_thread_preview(messages)
@@ -60,33 +117,31 @@ def build_context_reply(messages: list[dict[str, Any]]) -> str:
     ]
 
     notion_sections: list[str] = []
-    notion_ids_seen: set[str] = set()
-    for u in urls:
-        nid = notion_page_id_from_url(u)
-        if nid and nid not in notion_ids_seen:
-            notion_ids_seen.add(nid)
-
-    if notion_ids_seen:
-        if not notion_token:
-            notion_sections.append(
-                "_Notion:_ links found, but `NOTION_TOKEN` is not set — add integration token to `.env` to fetch page previews."
-            )
+    token_missing_shown = False
+    for row in gather_notion_previews(messages):
+        nid = row["page_id"]
+        if row.get("error") == "NOTION_TOKEN not set":
+            if not token_missing_shown:
+                notion_sections.append(
+                    "_Notion:_ links found, but `NOTION_TOKEN` is not set — add integration token to `.env` to fetch page previews."
+                )
+                token_missing_shown = True
+            continue
+        if row.get("error"):
+            notion_sections.append(f"• Notion `{nid[:8]}…`: _{row['error']}_")
         else:
-            for nid in notion_ids_seen:
-                info = fetch_page_preview(notion_token, nid)
-                if info.get("error"):
-                    notion_sections.append(f"• Notion `{nid[:8]}…`: _{info['error']}_")
-                else:
-                    title = info.get("title") or "(untitled)"
-                    prv = (info.get("preview") or "").strip()
-                    if prv:
-                        clip = prv[:800] + ("…" if len(prv) > 800 else "")
-                        notion_sections.append(f"• *{title}*\n```{clip}```")
-                    else:
-                        notion_sections.append(f"• *{title}* _(no block text fetched)_")
+            title = row.get("title") or "(untitled)"
+            prv = (row.get("preview") or "").strip()
+            if prv:
+                clip = prv[:800] + ("…" if len(prv) > 800 else "")
+                notion_sections.append(f"• *{title}*\n```{clip}```")
+            else:
+                notion_sections.append(f"• *{title}* _(no block text fetched)_")
 
     if urls and not notion_sections:
-        lines.append("_No Notion page IDs parsed from URLs (only notion.so / notion.site links are supported)._")
+        lines.append(
+            "_No Notion page IDs parsed from URLs (only notion.so / notion.site links are supported)._"
+        )
 
     if notion_sections:
         lines.append("*Notion previews*")

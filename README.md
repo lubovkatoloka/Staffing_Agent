@@ -6,6 +6,17 @@ Slack-based assistant for staffing decisions. Product logic is defined in Notion
 
 Track work in [GitHub Issues](https://github.com/lubovkatoloka/Staffing_Agent/issues).
 
+### Tests
+
+```bash
+pip install -r requirements.txt
+python -m pytest tests/ -q
+```
+
+### Mock LLM (no Anthropic key)
+
+If `ANTHROPIC_API_KEY` is unset (or `STAFFING_AGENT_MOCK_LLM=1`), extraction uses a **mock** `RequestSpec` so Slack still works. Thresholds live in `config/thresholds.yaml`.
+
 ### LLM (Anthropic Opus)
 
 Default model is **Claude Opus** (`claude-opus-4-6` unless you set `ANTHROPIC_MODEL` in `.env`). Add `ANTHROPIC_API_KEY` from [Anthropic Console](https://console.anthropic.com/). If the API returns “model not found”, set `ANTHROPIC_MODEL` to an Opus id from the [models list](https://docs.anthropic.com/en/docs/about-claude/models) (e.g. a dated `claude-3-opus-…` snapshot).
