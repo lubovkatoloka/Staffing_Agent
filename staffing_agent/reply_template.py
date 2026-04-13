@@ -16,7 +16,11 @@ Slack reply shape for @mention pipeline (paste_run + socket).
 6. **Похожие проекты** — опционально из CSV «Projects & Offers Classification» (`config/projects_classification.yaml`) по тегам Phase B.
 7. **Phase C** — демо полос + подсказка DBX (коротко).
 
-Переключение: env `STAFFING_AGENT_REPLY_STYLE` = `compact` | `full` (default: compact).
+Переключение: env `STAFFING_AGENT_REPLY_STYLE` = `minimal` | `compact` | `full` (default: minimal).
+
+- **minimal** — краткое саммари запроса + рекомендация и короткое «почему» (без JSON, без списков исключений, без PTO/похожих проектов/Phase C).
+- **compact** — саммари + Node 2–3 с превью Occupation; без PTO/active/follow-up/похожих/Phase C.
+- **full** — полный вывод (как раньше).
 """
 
 from __future__ import annotations
@@ -24,14 +28,16 @@ from __future__ import annotations
 import os
 from typing import Literal
 
-ReplyStyle = Literal["compact", "full"]
+ReplyStyle = Literal["minimal", "compact", "full"]
 
 
 def reply_style() -> ReplyStyle:
-    v = (os.environ.get("STAFFING_AGENT_REPLY_STYLE") or "compact").strip().lower()
+    v = (os.environ.get("STAFFING_AGENT_REPLY_STYLE") or "minimal").strip().lower()
     if v == "full":
         return "full"
-    return "compact"
+    if v == "compact":
+        return "compact"
+    return "minimal"
 
 
 # Лимиты для compact-режима

@@ -16,6 +16,27 @@ from staffing_agent.config_loader import load_decision_config
 from staffing_agent.databricks_cli import databricks_profile, run_sql_query
 from staffing_agent.node3_role_buckets import format_role_bucket_fallback, format_role_bucket_section
 from staffing_agent.node4_recommendation import build_project_recommendation_markdown
+
+
+def _maybe_project_staffing_markdown(
+    occupation_rows: list[dict[str, Any]],
+    *,
+    tier: Optional[int],
+    decision_cfg: dict[str, Any],
+    project_type_tags: Optional[list[str]],
+    summary: str,
+    timeout_sec: int,
+) -> str:
+    from staffing_agent.node3_project_staffing import fetch_project_staffing_addon
+
+    return fetch_project_staffing_addon(
+        occupation_rows,
+        tier=tier,
+        decision_cfg=decision_cfg,
+        project_type_tags=project_type_tags or [],
+        summary=summary or "",
+        timeout_sec=timeout_sec,
+    )
 from staffing_agent.projects_classification import append_similar_projects_to_lines
 from staffing_agent.node3_tier_preview import occupation_preview_caption_suffix, occupation_preview_roles
 from staffing_agent.reply_template import (
@@ -202,13 +223,19 @@ def node3_slack_markdown(
     cfg = load_decision_config()
     prof = databricks_profile()
     rs = reply_style()
+    minimal = rs == "minimal"
     compact = rs == "compact"
-    checklist = node3_checklist_intro_compact() if compact else node3_checklist_intro()
+    full = rs == "full"
+    checklist = (
+        node3_checklist_intro_compact()
+        if (compact or minimal)
+        else node3_checklist_intro()
+    )
 
     spec_blurb = (
         "_Источник: Databricks (`occupation.sql`, optional PTO / active projects) — "
         f"<https://www.notion.so/toloka-ai/Staffing-Agent-Decision-Logic-v1-0-32749d0688568183af3bf80ff6aedfd4|Decision Logic v1.0>._"
-        if compact
+        if (compact or minimal)
         else (
             "_Notion spec:_ [Decision Logic v1.0](https://www.notion.so/toloka-ai/Staffing-Agent-Decision-Logic-v1-0-32749d0688568183af3bf80ff6aedfd4) "
             "(Occupation SQL, PTO SQL, optional Active projects list). "
@@ -220,9 +247,11 @@ def node3_slack_markdown(
         checklist,
         spec_blurb,
     ]
-    om: Literal["compact", "full"] = "compact" if compact else "full"
+    om: Literal["compact", "full"] = "compact" if (compact or minimal) else "full"
 
     if not prof:
+        if minimal:
+            return "_Occupation недоступен:_ задайте `DATABRICKS_PROFILE` в `.env` и CLI `databricks`._"
         lines.append(
             "_Set `DATABRICKS_PROFILE` in `.env` and install `databricks` CLI. "
             "Add SQL files under `sql/` (see `sql/pto.sql`, `sql/active_projects.sql`)._"
@@ -230,16 +259,23 @@ def node3_slack_markdown(
         lines.append("")
         lines.append(format_role_bucket_fallback("Не задан DATABRICKS_PROFILE", tier=tier))
         lines.append("")
-        lines.append("\n".join(_followup_block(tier, compact=compact)))
-        append_similar_projects_to_lines(
-            lines, project_type_tags=project_type_tags, summary=summary
-        )
+        if full:
+            lines.append("\n".join(_followup_block(tier, compact=False)))
+            append_similar_projects_to_lines(
+                lines, project_type_tags=project_type_tags, summary=summary
+            )
         return "\n".join(lines)
 
     # --- Occupation (main) ---
     path_occ = occupation_sql_path()
     sql_occ = _sql_executable_text(path_occ)
     if len(sql_occ) < MIN_OCCUPATION_SQL_LEN:
+        if minimal:
+            try:
+                rel = path_occ.relative_to(_ROOT)
+            except ValueError:
+                rel = path_occ
+            return f"_В `{rel}` нет запроса Occupation — вставьте SQL из Notion._"
         try:
             rel = path_occ.relative_to(_ROOT)
         except ValueError:
@@ -275,26 +311,33 @@ def node3_slack_markdown(
         lines.append("")
         lines.append(format_role_bucket_fallback("Добавьте полный SQL в sql/occupation.sql.", tier=tier))
         lines.append("")
-        lines.append("\n".join(_followup_block(tier, compact=compact)))
-        append_similar_projects_to_lines(
-            lines, project_type_tags=project_type_tags, summary=summary
-        )
+        if full:
+            lines.append("\n".join(_followup_block(tier, compact=False)))
+            append_similar_projects_to_lines(
+                lines, project_type_tags=project_type_tags, summary=summary
+            )
         return "\n".join(lines)
 
     ok, out = _run_query_json_first(sql_occ, timeout_sec=timeout_sec)
     if not ok:
+        if minimal:
+            clip = out[:400] + ("…" if len(out) > 400 else "")
+            return f"_Запрос Occupation не выполнился:_ `{clip}`"
         lines.append(f"_Occupation query failed:_ `{out[:900]}{'…' if len(out) > 900 else ''}`")
         lines.append("")
         lines.append(format_role_bucket_fallback("Запрос Occupation не выполнен (см. ошибку выше).", tier=tier))
         lines.append("")
-        lines.append("\n".join(_followup_block(tier, compact=compact)))
-        append_similar_projects_to_lines(
-            lines, project_type_tags=project_type_tags, summary=summary
-        )
+        if full:
+            lines.append("\n".join(_followup_block(tier, compact=False)))
+            append_similar_projects_to_lines(
+                lines, project_type_tags=project_type_tags, summary=summary
+            )
         return "\n".join(lines)
 
     rows = _try_parse_query_json(out)
     if not rows:
+        if minimal:
+            return "_Ответ Occupation не похож на JSON-массив — проверьте выдачу в Databricks._"
         clip = out[:6000] + ("…" if len(out) > 6000 else "")
         lines.append("_Occupation: raw output (JSON parse failed):_")
         lines.append(f"```{clip}```")
@@ -328,7 +371,18 @@ def node3_slack_markdown(
             decision_cfg=cfg,
             project_type_tags=project_type_tags or [],
             summary=summary or "",
+            detail="minimal" if minimal else "standard",
         )
+        if minimal:
+            ps = _maybe_project_staffing_markdown(
+                rows,
+                tier=tier,
+                decision_cfg=cfg,
+                project_type_tags=project_type_tags,
+                summary=summary or "",
+                timeout_sec=min(timeout_sec, 180),
+            )
+            return f"{rec}\n\n{ps}" if ps else rec
 
         def _occ_table_lines() -> list[str]:
             out: list[str] = []
@@ -370,6 +424,17 @@ def node3_slack_markdown(
             lines.append("")
             lines.extend(_occ_table_lines())
             lines.append("_Полный список — в Databricks / `occupation.sql`._")
+            ps_c = _maybe_project_staffing_markdown(
+                rows,
+                tier=tier,
+                decision_cfg=cfg,
+                project_type_tags=project_type_tags,
+                summary=summary or "",
+                timeout_sec=min(timeout_sec, 180),
+            )
+            if ps_c:
+                lines.append("")
+                lines.append(ps_c)
         else:
             lines.extend(_occ_table_lines())
             lines.append("")
@@ -377,36 +442,37 @@ def node3_slack_markdown(
             lines.append("")
             lines.append(rec)
 
-    append_similar_projects_to_lines(
-        lines, project_type_tags=project_type_tags, summary=summary
-    )
-
-    lines.append("")
-    lines.extend(
-        _section_optional_query(
-            title="PTO snapshot (separate query from Notion)",
-            path=pto_sql_path(),
-            prof=prof,
-            timeout_sec=min(timeout_sec, 180),
-            min_sql_len=MIN_OPTIONAL_SQL_LEN,
-            max_rows=20,
-            mode=om,
+    if full:
+        append_similar_projects_to_lines(
+            lines, project_type_tags=project_type_tags, summary=summary
         )
-    )
-    lines.append("")
-    lines.extend(
-        _section_optional_query(
-            title="Active projects (separate query from Notion)",
-            path=active_projects_sql_path(),
-            prof=prof,
-            timeout_sec=min(timeout_sec, 180),
-            min_sql_len=MIN_OPTIONAL_SQL_LEN,
-            max_rows=15,
-            mode=om,
-        )
-    )
 
-    lines.append("")
-    lines.append("\n".join(_followup_block(tier, compact=compact)))
+        lines.append("")
+        lines.extend(
+            _section_optional_query(
+                title="PTO snapshot (separate query from Notion)",
+                path=pto_sql_path(),
+                prof=prof,
+                timeout_sec=min(timeout_sec, 180),
+                min_sql_len=MIN_OPTIONAL_SQL_LEN,
+                max_rows=20,
+                mode=om,
+            )
+        )
+        lines.append("")
+        lines.extend(
+            _section_optional_query(
+                title="Active projects (separate query from Notion)",
+                path=active_projects_sql_path(),
+                prof=prof,
+                timeout_sec=min(timeout_sec, 180),
+                min_sql_len=MIN_OPTIONAL_SQL_LEN,
+                max_rows=15,
+                mode=om,
+            )
+        )
+
+        lines.append("")
+        lines.append("\n".join(_followup_block(tier, compact=False)))
 
     return "\n".join(lines)

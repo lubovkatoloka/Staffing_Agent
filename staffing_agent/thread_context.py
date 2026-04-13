@@ -165,6 +165,12 @@ def notion_excerpt_for_llm(
     return "\n".join(parts).strip()
 
 
+def build_context_minimal_line(messages: list[dict[str, Any]]) -> str:
+    """One line for minimal Slack mode — no full thread dump."""
+    n = len(messages)
+    return f"_Контекст: {n} сообщ. в треде._"
+
+
 def build_context_reply(
     messages: list[dict[str, Any]],
     *,

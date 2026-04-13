@@ -41,3 +41,20 @@ class RequestSpec(BaseModel):
         import json
 
         return "```json\n" + json.dumps(data, ensure_ascii=False, indent=2) + "\n```"
+
+    def to_slack_brief(self) -> str:
+        """Short human-readable summary for Slack (no JSON)."""
+        parts: list[str] = []
+        if self.tier is not None:
+            tier_line = f"*Tier {self.tier}*"
+            if self.complexity_class:
+                tier_line += f" · класс {self.complexity_class}"
+            parts.append(tier_line)
+        if self.project_type_tags:
+            parts.append("_Тип запроса:_ " + ", ".join(self.project_type_tags))
+        body = (self.summary or "").strip()
+        if not body and (self.tier_rationale or "").strip():
+            body = (self.tier_rationale or "").strip()
+        if body:
+            parts.append(body)
+        return "\n".join(parts) if parts else "_Нет краткого описания в Phase B._"

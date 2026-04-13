@@ -14,12 +14,9 @@ from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 from slack_sdk import WebClient
 
-from staffing_agent.decision.node2_rules import node2_slack_markdown
 from staffing_agent.extraction import extract_request_spec, mock_llm_reason, uses_mock_llm
-from staffing_agent.node3_occupation import node3_slack_markdown
-from staffing_agent.slack_phase_c import build_phase_c_section
+from staffing_agent.paste_run import build_slack_mention_reply
 from staffing_agent.thread_context import (
-    build_context_reply,
     exclude_bot_user_messages,
     format_thread_preview,
     gather_notion_previews,
@@ -194,23 +191,12 @@ def create_app() -> App:
             file=sys.stderr,
             flush=True,
         )
-        reply = (
-            build_context_reply(messages, previews=previews)
-            + f"\n\n*Phase B — extraction (Node 1)* _(source: {src_label})_\n"
-            + spec.to_slack_block()
-            + "\n\n"
-            + node2_slack_markdown(spec.tier, spec.project_type_tags)
-            + "\n\n"
-            + node3_slack_markdown(
-                tier=spec.tier,
-                project_type_tags=spec.project_type_tags,
-                summary=spec.summary,
-            )
-            + "\n\n"
-            + build_phase_c_section()
+        reply = build_slack_mention_reply(
+            messages,
+            previews,
+            spec,
+            extraction_src_label=src_label,
         )
-        if len(reply) > 12000:
-            reply = reply[:11900] + "\n```\n… (truncated)"
 
         try:
             client.chat_postMessage(channel=channel, thread_ts=root_ts, text=reply)

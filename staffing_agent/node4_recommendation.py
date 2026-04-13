@@ -4,7 +4,7 @@ Who can take the project — ranked recommendation from Occupation rows + People
 
 from __future__ import annotations
 
-from typing import Any, Mapping, Optional
+from typing import Any, Literal, Mapping, Optional
 
 from staffing_agent.decision import classify_availability
 from staffing_agent.decision.enums import AvailabilityLabel
@@ -49,6 +49,98 @@ def _needs_so_table_filter(project_role: str) -> bool:
     return (project_role or "").strip().lower() in ("soe", "dpm")
 
 
+def _staffing_full_scored(
+    rows: list[dict[str, Any]],
+    *,
+    tier: Optional[int],
+    decision_cfg: Mapping[str, Any],
+    project_type_tags: list[str],
+    summary: str,
+    staffing: dict[str, StaffingRecord],
+) -> list[tuple[dict[str, Any], Any, StaffingRecord | None, int, str | None]]:
+    """All role-filtered candidates with CSV reasons — same sort as recommendation."""
+    if not rows or tier is None or tier not in (1, 2, 3, 4):
+        return []
+
+    role_filter = occupation_preview_roles(tier)
+    if role_filter is None:
+        return []
+
+    candidates = [r for r in rows if project_role_norm(r) in role_filter]
+    if not candidates:
+        return []
+
+    st_cfg = load_staffing_table_config()
+    scored: list[tuple[dict[str, Any], Any, StaffingRecord | None, int, str | None]] = []
+    for r in candidates:
+        av = _classify_row(r, decision_cfg)
+        em = email_value(r)
+        rec = staffing.get(em) if em else None
+        sk = skill_match_score(rec, project_type_tags, summary) if rec else 0
+        pr = project_role_norm(r)
+        reason: str | None = None
+        if rec:
+            if comment_blocks_staffing(rec.comment, st_cfg):
+                reason = "blocked_comment"
+            elif _needs_so_table_filter(pr) and not is_so_or_can_be_so(rec.so_status):
+                reason = "not_so"
+        else:
+            if _needs_so_table_filter(pr):
+                reason = "no_csv"
+        scored.append((r, av, rec, sk, reason))
+
+    def sort_key(
+        it: tuple[dict[str, Any], Any, StaffingRecord | None, int, str | None],
+    ) -> tuple[int, int, float, int]:
+        r, av, _rec, sk, reason = it
+        eligible = reason is None
+        occ = occupation_value(r) if occupation_value(r) is not None else 1.0
+        bucket = 0 if eligible else 1
+        return (bucket, -sk, _label_rank(av.label), occ)
+
+    scored.sort(key=sort_key)
+    return scored
+
+
+def _is_pickable_tuple(
+    it: tuple[dict[str, Any], Any, StaffingRecord | None, int, str | None],
+) -> bool:
+    r, av, _rec, _sk, reason = it
+    good_labels = frozenset(
+        {
+            AvailabilityLabel.FREE,
+            AvailabilityLabel.PARTIAL,
+            AvailabilityLabel.SOFT,
+        }
+    )
+    return av.label in good_labels and reason is None
+
+
+def pickable_recommendation_rows(
+    rows: list[dict[str, Any]],
+    *,
+    tier: Optional[int],
+    decision_cfg: Mapping[str, Any],
+    project_type_tags: Optional[list[str]] = None,
+    summary: str = "",
+    staffing_by_email: Optional[dict[str, StaffingRecord]] = None,
+    limit: int = 4,
+) -> list[dict[str, Any]]:
+    """Occupation rows for top recommended people (same order as Slack list)."""
+    tags = project_type_tags or []
+    staffing = staffing_by_email if staffing_by_email is not None else load_staffing_records()
+    scored = _staffing_full_scored(
+        rows,
+        tier=tier,
+        decision_cfg=decision_cfg,
+        project_type_tags=tags,
+        summary=summary,
+        staffing=staffing,
+    )
+    pickable = [it for it in scored if _is_pickable_tuple(it)]
+    return [it[0] for it in pickable[:limit]]
+
+
 def build_project_recommendation_markdown(
     rows: list[dict[str, Any]],
     *,
@@ -57,13 +149,16 @@ def build_project_recommendation_markdown(
     project_type_tags: Optional[list[str]] = None,
     summary: str = "",
     staffing_by_email: Optional[dict[str, StaffingRecord]] = None,
+    detail: Literal["minimal", "standard", "full"] = "standard",
 ) -> str:
     """
     Primary + backup with People & Tags CSV (email), Comment / SO Status / Skills.
+
+    *minimal* — только топ-кандидаты и короткое обоснование; без списков исключений и UNVERIFIED.
     """
     tags = project_type_tags or []
-    st_cfg = load_staffing_table_config()
     staffing = staffing_by_email if staffing_by_email is not None else load_staffing_records()
+    minimal = detail == "minimal"
 
     if not rows:
         return ""
@@ -93,69 +188,35 @@ def build_project_recommendation_markdown(
 
     csv_loaded = bool(staffing)
 
-    scored: list[tuple[dict[str, Any], Any, StaffingRecord | None, int, str | None]] = []
-    # tuple: row, availability, staffing_record|None, skill_score, exclude_reason or None
-    # exclude_reason: "blocked_comment" | "not_so" | "no_csv" (no_csv only blocks primary tier for SO roles)
-    for r in candidates:
-        av = _classify_row(r, decision_cfg)
-        em = email_value(r)
-        rec = staffing.get(em) if em else None
-        sk = skill_match_score(rec, tags, summary) if rec else 0
-        pr = project_role_norm(r)
-        reason: str | None = None
-        if rec:
-            if comment_blocks_staffing(rec.comment, st_cfg):
-                reason = "blocked_comment"
-            elif _needs_so_table_filter(pr) and not is_so_or_can_be_so(rec.so_status):
-                reason = "not_so"
-        else:
-            if _needs_so_table_filter(pr):
-                reason = "no_csv"
-        scored.append((r, av, rec, sk, reason))
-
-    def sort_key(
-        it: tuple[dict[str, Any], Any, StaffingRecord | None, int, str | None],
-    ) -> tuple[int, int, float, int]:
-        r, av, _rec, sk, reason = it
-        # eligible for primary: no blocking reason
-        eligible = reason is None
-        occ = occupation_value(r) if occupation_value(r) is not None else 1.0
-        # non-eligible last within same availability
-        bucket = 0 if eligible else 1
-        return (
-            bucket,
-            -sk,
-            _label_rank(av.label),
-            occ,
-        )
-
-    scored.sort(key=sort_key)
-
-    good_labels = frozenset(
-        {
-            AvailabilityLabel.FREE,
-            AvailabilityLabel.PARTIAL,
-            AvailabilityLabel.SOFT,
-        }
+    scored = _staffing_full_scored(
+        rows,
+        tier=tier,
+        decision_cfg=decision_cfg,
+        project_type_tags=tags,
+        summary=summary,
+        staffing=staffing,
     )
-
-    def is_pickable(it: tuple) -> bool:
-        r, av, _rec, _sk, reason = it
-        return av.label in good_labels and reason is None
-
-    pickable = [it for it in scored if is_pickable(it)]
+    pickable = [it for it in scored if _is_pickable_tuple(it)]
 
     unverified = [(r, av) for r, av, _, _, reas in scored if av.label == AvailabilityLabel.UNVERIFIED and reas is None]
 
-    lines: list[str] = [
-        "*Рекомендация: кто может взять проект* _(Tier + Occupation + People & Tags CSV по email)_",
-    ]
-    if csv_loaded:
-        lines.append("_Таблица People & Tags загружена; Comment / SO Status / Skills учтены._")
+    if minimal:
+        lines = [
+            "*Рекомендация*",
+            "_Почему:_ занятость из сводки Occupation (Databricks), роль SoE/DPM под этот Tier, "
+            "в People & Tags — статус SO / can be SO и близость skills к тегам запроса. "
+            "Перед слотом сверьте календарь и актуальные заказы в SCM — Node 3–5 в спеке это проверочные шаги._",
+        ]
     else:
-        lines.append(
-            "_Файл CSV не найден (`config/staffing_csv.yaml` / `STAFFING_PEOPLE_CSV_PATH`) — только загрузка из Databricks._"
-        )
+        lines = [
+            "*Рекомендация: кто может взять проект* _(Tier + Occupation + People & Tags CSV по email)_",
+        ]
+        if csv_loaded:
+            lines.append("_Таблица People & Tags загружена; Comment / SO Status / Skills учтены._")
+        else:
+            lines.append(
+                "_Файл CSV не найден (`config/staffing_csv.yaml` / `STAFFING_PEOPLE_CSV_PATH`) — только загрузка из Databricks._"
+            )
 
     def _fmt(r: dict[str, Any], av: Any, rec: StaffingRecord | None) -> str:
         occ = occupation_value(r)
@@ -169,7 +230,7 @@ def build_project_recommendation_markdown(
             extra = f" _SO Status: {so}_"
             if sk_hint:
                 extra += f" _{sk_hint}_"
-            if (rec.comment or "").strip():
+            if not minimal and (rec.comment or "").strip():
                 extra += f" _Comment: {(rec.comment.strip())[:120]}{'…' if len(rec.comment.strip()) > 120 else ''}_"
             return base + extra
         return base
@@ -188,11 +249,19 @@ def build_project_recommendation_markdown(
             for it in rest:
                 lines.append(_line(it[0], it[1], it[2]))
     else:
-        lines.append(
-            "_Нет кандидатов FREE/PARTIAL/SOFT без блокировок CSV — см. исключения ниже или Node 5._"
-        )
+        if minimal:
+            lines.append(
+                "_Нет кандидатов FREE/PARTIAL/SOFT с подтверждённым SO в таблице — проверьте CSV (email), Tier или эскалация._"
+            )
+        else:
+            lines.append(
+                "_Нет кандидатов FREE/PARTIAL/SOFT без блокировок CSV — см. исключения ниже или Node 5._"
+            )
 
-    # Exclusion sections
+    # Exclusion sections (not in minimal — ответ только с топ-кандидатами)
+    if minimal:
+        return "\n".join(lines)
+
     blocked_names = [(name_value(r), rec.comment[:80] if rec else "") for r, av, rec, _, reas in scored if reas == "blocked_comment"]
     if blocked_names:
         lines.append("*Исключены по Comment (не стаффить):*")
