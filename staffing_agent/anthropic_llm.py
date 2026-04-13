@@ -20,6 +20,19 @@ def anthropic_model_name() -> str:
     return (os.environ.get("ANTHROPIC_MODEL") or DEFAULT_OPUS_MODEL).strip()
 
 
+def anthropic_base_url() -> str | None:
+    """
+    Optional proxy (e.g. internal LiteLLM). If set, requests go here instead of api.anthropic.com.
+    Use ANTHROPIC_BASE_URL or LITELLM_BASE_URL (same meaning).
+    """
+    u = (
+        os.environ.get("ANTHROPIC_BASE_URL")
+        or os.environ.get("LITELLM_BASE_URL")
+        or ""
+    ).strip()
+    return u or None
+
+
 def get_api_key() -> str:
     key = (os.environ.get("ANTHROPIC_API_KEY") or "").strip()
     if not key:
@@ -27,6 +40,16 @@ def get_api_key() -> str:
             "ANTHROPIC_API_KEY is not set. Add it to .env (see .env.example)."
         )
     return key
+
+
+def _anthropic_client() -> Any:
+    import anthropic
+
+    kwargs: dict[str, Any] = {"api_key": get_api_key()}
+    base = anthropic_base_url()
+    if base:
+        kwargs["base_url"] = base
+    return anthropic.Anthropic(**kwargs)
 
 
 def complete_text(
@@ -37,9 +60,7 @@ def complete_text(
     temperature: float = 0.2,
 ) -> str:
     """Single-turn completion; returns assistant text."""
-    import anthropic
-
-    client = anthropic.Anthropic(api_key=get_api_key())
+    client = _anthropic_client()
     msg = client.messages.create(
         model=anthropic_model_name(),
         max_tokens=max_tokens,
@@ -77,11 +98,12 @@ def complete_json(
 
 def check_anthropic_connection() -> None:
     """One token completion to verify key + model name."""
-    import anthropic
-
     model = anthropic_model_name()
     print(f"Using model: {model}", flush=True)
-    client = anthropic.Anthropic(api_key=get_api_key())
+    base = anthropic_base_url()
+    if base:
+        print(f"Using API base URL (proxy): {base}", flush=True)
+    client = _anthropic_client()
     msg = client.messages.create(
         model=model,
         max_tokens=32,

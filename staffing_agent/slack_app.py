@@ -14,9 +14,13 @@ from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 from slack_sdk import WebClient
 
-from staffing_agent.extraction import extract_request_spec
+from staffing_agent.decision.node2_rules import node2_slack_markdown
+from staffing_agent.extraction import extract_request_spec, mock_llm_reason, uses_mock_llm
+from staffing_agent.node3_occupation import node3_slack_markdown
+from staffing_agent.slack_phase_c import build_phase_c_section
 from staffing_agent.thread_context import (
     build_context_reply,
+    exclude_bot_user_messages,
     format_thread_preview,
     gather_notion_previews,
     notion_excerpt_for_llm,
@@ -29,6 +33,21 @@ load_dotenv(_ENV_PATH, override=True)
 logger = logging.getLogger(__name__)
 
 REQUIRED = ("SLACK_BOT_TOKEN", "SLACK_SIGNING_SECRET", "SLACK_APP_TOKEN")
+
+# Cached Slack bot user id (auth.test) — exclude our own replies from thread text for LLM
+_CACHED_BOT_USER_ID: str | None = None
+
+
+def _get_bot_user_id(client: Any) -> str:
+    global _CACHED_BOT_USER_ID
+    if _CACHED_BOT_USER_ID is None:
+        r = client.auth_test()
+        uid = r.get("user_id")
+        if not uid:
+            raise RuntimeError("Slack auth.test did not return user_id")
+        _CACHED_BOT_USER_ID = str(uid)
+        logger.info("bot user_id=%s (our replies excluded from Phase B context)", _CACHED_BOT_USER_ID)
+    return _CACHED_BOT_USER_ID
 
 
 def _check_env() -> None:
@@ -138,6 +157,9 @@ def create_app() -> App:
             )
             return
 
+        bot_uid = _get_bot_user_id(client)
+        messages = exclude_bot_user_messages(messages, bot_uid)
+
         thread_plain = format_thread_preview(messages)
         print(
             "[staffing] Notion: fetching page previews for links in thread (if any; may take a few seconds)…",
@@ -167,10 +189,25 @@ def create_app() -> App:
             "error": "error",
         }.get(src, src)
 
+        print(
+            "[staffing] Node 2–3: building pool text + optional Databricks occupation query…",
+            file=sys.stderr,
+            flush=True,
+        )
         reply = (
             build_context_reply(messages, previews=previews)
-            + f"\n\n*Phase B — extraction* _(source: {src_label})_\n"
+            + f"\n\n*Phase B — extraction (Node 1)* _(source: {src_label})_\n"
             + spec.to_slack_block()
+            + "\n\n"
+            + node2_slack_markdown(spec.tier, spec.project_type_tags)
+            + "\n\n"
+            + node3_slack_markdown(
+                tier=spec.tier,
+                project_type_tags=spec.project_type_tags,
+                summary=spec.summary,
+            )
+            + "\n\n"
+            + build_phase_c_section()
         )
         if len(reply) > 12000:
             reply = reply[:11900] + "\n```\n… (truncated)"
@@ -201,6 +238,19 @@ def run_socket_mode() -> None:
     )
     print("[2/4] Building Bolt app (calls auth.test)…", flush=True, file=sys.stderr)
     app = create_app()
+    if uses_mock_llm():
+        print(
+            f"[staffing] LLM: MOCK — {mock_llm_reason()} "
+            "(fix .env, then restart the bot — env is read only at process start).",
+            flush=True,
+            file=sys.stderr,
+        )
+    else:
+        print(
+            "[staffing] LLM: LIVE (Anthropic API via ANTHROPIC_* / LiteLLM).",
+            flush=True,
+            file=sys.stderr,
+        )
     print("[3/4] Starting Socket Mode handler…", flush=True, file=sys.stderr)
     handler = SocketModeHandler(app, os.environ["SLACK_APP_TOKEN"])
     logging.getLogger(__name__).info("Socket Mode handler starting (Ctrl+C to stop)…")

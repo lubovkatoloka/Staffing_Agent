@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, List, Optional
+from typing import Any, List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -10,7 +10,15 @@ from pydantic import BaseModel, Field, field_validator
 class RequestSpec(BaseModel):
     """LLM extraction from Slack thread (+ optional Notion excerpts)."""
 
-    tier: Optional[int] = Field(None, description="Project tier 1–4 if inferable")
+    tier: Optional[int] = Field(None, description="Project tier 1–4 (required when there is staffing/project context)")
+    complexity_class: Optional[Literal["S", "M", "L"]] = Field(
+        None,
+        description="Framework complexity S/M/L; set when tier is set",
+    )
+    tier_rationale: str = Field(
+        "",
+        description="Node 1: why this tier + complexity (1–4 sentences)",
+    )
     project_type_tags: List[str] = Field(default_factory=list)
     summary: str = Field("", description="One short paragraph")
     project_start_hint: Optional[str] = Field(

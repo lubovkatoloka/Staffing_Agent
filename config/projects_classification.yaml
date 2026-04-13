@@ -1,0 +1,6 @@
+# Projects & Offers Classification (Notion export) — похожие прошлые сдачи по тегам Phase B.
+# Файл по умолчанию лежит в config/notion_export/
+# Env: STAFFING_PROJECTS_CLASSIFICATION_CSV_PATH
+
+csv_path: notion_export/projects_offers_classification_0.csv
+max_similar: 5

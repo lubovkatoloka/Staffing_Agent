@@ -1,0 +1,29 @@
+# Node 1 — tier from thread context (for LLM prompt). Align with Project Classification Framework + Decision Logic v1.0.
+# https://www.notion.so/toloka-ai/Project-Classification-Framework-27149d0688568051b1d3e712bdf9d4e5
+
+framework_url: "https://www.notion.so/toloka-ai/Project-Classification-Framework-27149d0688568051b1d3e712bdf9d4e5"
+
+# Short rules the model must apply when there is any staffing/project context:
+classification_rules: |
+  You MUST classify Node 1 for every staffing or project request (not empty pings).
+
+  Complexity S / M / L (signals from Project Classification Framework):
+  - S: standard Toloka capabilities, linear workflows, automated QC, low coordination — often Tier 1–2.
+  - M: multi-stage pipelines, domain evals, several skill types, medium stakeholder load — often Tier 3.
+  - L: custom infra, agentic/multi-modal heavy R&D, strategic flagship risk, 6+ FTE — often Tier 4.
+
+  Tier mapping (Decision Logic):
+  - Tier 1: client platform / raw supply (S), DPM+WFM heavy; examples: client platform work.
+  - Tier 2: standard Toloka pipeline (S), SoE-led; preferences, typical evals, multilingual eval when still "standard pipeline".
+  - Tier 3: multi-stage / domain expertise (M); SSoE or DPM + SoE + WFM; tag/domain match matters for pool.
+  - Tier 4: strategic / large (L); DPM + full team including Commercial.
+
+  Heuristics (use only as hints; justify in tier_rationale):
+  - Intro / discovery / "join a call" without scope is still a staffing request — infer best tier from product words (evals, TTS, multilingual → often Tier 2 unless clearly M/L).
+  - "Evals" + standard pipeline wording → usually Tier 2 (S).
+  - If text is ONLY @mentions with zero project content, tier may be null.
+
+output_requirements: |
+  Always fill `tier_rationale` (1–4 sentences): complexity S/M/L + why tier 1–4.
+  Fill `complexity_class` with "S", "M", or "L" when tier is not null.
+  Set `tier` to an integer 1–4 whenever there is substantive project/staffing context.

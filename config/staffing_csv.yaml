@@ -1,0 +1,21 @@
+# People & Tags CSV (Notion export) — склейка с Occupation по email.
+#
+# Обновление данных без Notion API:
+# 1) В Notion: Export блока / базы → zip.
+# 2) Достать из внутреннего zip CSV (имена с кириллицей в пути ломают unzip в терминале —
+#    удобнее скопировать CSV вручную или распаковать скриптом в репозиторий).
+# 3) Положить сюда как staffing_people_tags_all.csv (и при необходимости staffing_people_tags.csv).
+# 4) Перезапустить бота — агент читает файл при каждом @mention.
+#
+# Переопределение пути: env STAFFING_PEOPLE_CSV_PATH
+
+csv_path: notion_export/staffing_people_tags_all.csv
+
+# Если поле Comment совпадает с одним из regex — человека не стаффим вообще.
+comment_block_patterns:
+  - "(?i)do not staff"
+  - "(?i)not for staffing"
+  - "(?i)no staffing"
+  - "(?i)не стафф"
+  - "(?i)без стаффа"
+  - "(?i)исключ"

@@ -11,7 +11,14 @@ def test_tier_validation() -> None:
 
 
 def test_slack_block_contains_summary() -> None:
-    s = RequestSpec(tier=2, summary="hello", confidence=0.5)
+    s = RequestSpec(
+        tier=2,
+        summary="hello",
+        confidence=0.5,
+        complexity_class="S",
+        tier_rationale="Standard pipeline.",
+    )
     blk = s.to_slack_block()
     assert "hello" in blk
     assert '"tier": 2' in blk
+    assert "tier_rationale" in blk

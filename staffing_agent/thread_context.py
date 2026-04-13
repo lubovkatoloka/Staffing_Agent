@@ -21,10 +21,65 @@ def extract_urls_from_text(text: str) -> list[str]:
     return out
 
 
+def exclude_bot_user_messages(
+    messages: list[dict[str, Any]],
+    bot_user_id: str,
+) -> list[dict[str, Any]]:
+    """
+    Drop messages posted by our Slack app bot so Phase B does not re-ingest
+    prior bot replies (large JSON, duplicate Phase A text).
+    """
+    if not (bot_user_id or "").strip():
+        return messages
+    bid = bot_user_id.strip()
+    return [m for m in messages if (m.get("user") or "") != bid]
+
+
+def slack_message_plain_text(m: dict[str, Any]) -> str:
+    """
+    Top-level `text` plus text nested in Block Kit `blocks` / attachments.
+    Slack often sends empty `text` when the body lives only in blocks.
+    """
+    t = (m.get("text") or "").strip()
+    if t:
+        return t
+    parts: list[str] = []
+    _collect_text_from_blocks(m.get("blocks"), parts)
+    if parts:
+        return "\n".join(parts).strip()
+    for att in m.get("attachments") or []:
+        if not isinstance(att, dict):
+            continue
+        for key in ("text", "pretext", "fallback"):
+            v = att.get(key)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+    for f in m.get("files") or []:
+        if not isinstance(f, dict):
+            continue
+        title = f.get("title") or f.get("name")
+        if title:
+            return f"[shared file: {title}]"
+    return ""
+
+
+def _collect_text_from_blocks(obj: Any, out: list[str]) -> None:
+    """Shallow-deep: collect string values for keys named 'text' under blocks."""
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if k == "text" and isinstance(v, str) and v.strip():
+                out.append(v.strip())
+            else:
+                _collect_text_from_blocks(v, out)
+    elif isinstance(obj, list):
+        for x in obj:
+            _collect_text_from_blocks(x, out)
+
+
 def collect_urls_from_messages(messages: list[dict[str, Any]]) -> list[str]:
     seen: dict[str, None] = {}
     for m in messages:
-        t = m.get("text") or ""
+        t = slack_message_plain_text(m)
         for u in extract_urls_from_text(t):
             seen[u] = None
     return list(seen.keys())
@@ -35,9 +90,9 @@ def format_thread_preview(messages: list[dict[str, Any]], max_chars: int = 3500)
     total = 0
     for m in messages:
         uid = m.get("user") or "?"
-        text = (m.get("text") or "").strip()
+        text = slack_message_plain_text(m)
         if not text:
-            continue
+            text = "_[no extractable text — file-only or unsupported payload]_"
         line = f"<@{uid}>: {text}"
         if total + len(line) + 1 > max_chars:
             lines.append("… (truncated)")
