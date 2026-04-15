@@ -27,7 +27,7 @@ def build_phase_c_section() -> str:
     lines = [
         "*Phase C — decision engine (demo)*",
         f"_Example:_ occupation=0.62, active_projects=2 → `{demo.label.value}` ({demo.notes or 'band'})",
-        "_Основная рекомендация «кто может взять проект» — в блоке *Рекомендация* в Node 3 выше; здесь только демо полос._",
+        "_The main “who can take the project” recommendation is in the *Recommendation* block in Node 3 above; here is only a demo of the bands._",
     ]
 
     prof = databricks_profile()

@@ -112,7 +112,7 @@ def comment_blocks_staffing(comment: str, cfg: Mapping[str, Any]) -> bool:
 
 
 def is_so_or_can_be_so(so_status: str) -> bool:
-    """Responsible / SO: только SO или can be SO (по таблице)."""
+    """Responsible / SO: only SO or can be SO (per table)."""
     s = (so_status or "").strip().lower()
     if not s:
         return False
@@ -128,7 +128,7 @@ def skill_match_score(
     project_type_tags: list[str],
     summary: str,
 ) -> int:
-    """Чем выше, тем лучше совпадение тегов/скиллов с проектом."""
+    """Higher is better tag/skill overlap with the project."""
     blob = f"{summary or ''} " + " ".join(project_type_tags or [])
     blob_l = blob.lower()
     score = 0

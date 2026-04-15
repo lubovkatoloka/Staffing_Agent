@@ -2,10 +2,10 @@ from staffing_agent.node3_row_utils import project_role_norm
 from staffing_agent.node3_tier_preview import occupation_preview_caption_suffix, occupation_preview_roles
 
 
-def test_preview_roles_tier2_so_pool():
+def test_preview_roles_tier2_includes_wfm_qm():
     r = occupation_preview_roles(2)
     assert r is not None
-    assert r == frozenset({"soe", "dpm"})
+    assert r == frozenset({"soe", "dpm", "wfm", "qm"})
 
 
 def test_preview_roles_tier1():
@@ -40,8 +40,9 @@ def test_filter_rows_matches_tier2_logic():
         {"user_name": "W", "project_role": "wfm", "occupation": 0.1},
         {"user_name": "S", "project_role": "soe", "occupation": 0.2},
         {"user_name": "D", "project_role": "dpm", "occupation": 0.15},
+        {"user_name": "Q", "project_role": "qm", "occupation": 0.12},
     ]
     rf = occupation_preview_roles(2)
     preview = [r for r in rows if project_role_norm(r) in rf]
     names = {r["user_name"] for r in preview}
-    assert names == {"S", "D"}
+    assert names == {"W", "S", "D", "Q"}

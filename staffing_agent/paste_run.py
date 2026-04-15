@@ -15,11 +15,11 @@ from staffing_agent.node3_occupation import node3_slack_markdown
 from staffing_agent.reply_template import reply_style
 from staffing_agent.slack_phase_c import build_phase_c_section
 from staffing_agent.thread_context import (
-    build_context_minimal_line,
     build_context_reply,
     format_thread_preview,
+    gather_google_doc_previews,
     gather_notion_previews,
-    notion_excerpt_for_llm,
+    phase_b_excerpt_for_llm,
 )
 
 _ROOT = Path(__file__).resolve().parent.parent
@@ -30,8 +30,33 @@ def _src_label(src: str) -> str:
     return {
         "mock": "mock (set ANTHROPIC_API_KEY; unset STAFFING_AGENT_MOCK_LLM)",
         "anthropic": "Anthropic Opus",
+        "anthropic_fallback": "Anthropic failed — deal-feed heuristic summary",
         "error": "error",
     }.get(src, src)
+
+
+def _node3_markdown_when_no_tier() -> str:
+    """
+    When Phase B has no Tier, running Occupation + recommendation only repeats “set Tier” and wastes Databricks.
+    Use this instead of node3_slack_markdown for off-topic or incomplete threads.
+    """
+    return (
+        "*Staffing — Tier required*\n"
+        "_No Tier (1–4) was extracted from this thread. The bot matches people to roles only after Phase B has a "
+        "tier and a staffing-style ask (roles, timing). For a general availability snapshot without a specific project, "
+        "say that clearly in the thread so Phase B can classify it (e.g. team load / who is free)._ "
+        "_If this thread was not about staffing, you can ignore this reply._"
+    )
+
+
+def _node3_for_spec(spec: RequestSpec) -> str:
+    if spec.tier is None:
+        return _node3_markdown_when_no_tier()
+    return node3_slack_markdown(
+        tier=spec.tier,
+        project_type_tags=spec.project_type_tags,
+        summary=spec.summary,
+    )
 
 
 def build_slack_mention_reply(
@@ -40,30 +65,19 @@ def build_slack_mention_reply(
     spec: RequestSpec,
     *,
     extraction_src_label: str,
+    google_previews: list[dict[str, Any]] | None = None,
 ) -> str:
     """
     Single place for Socket Mode + paste: shape depends on STAFFING_AGENT_REPLY_STYLE.
-    minimal — краткое саммари + только рекомендация; full — Phase A + JSON + Node 2–3 + Phase C.
+    minimal — short summary + recommendation only; full — Phase A + JSON + Nodes 2–3 + Phase C.
     """
-    n3 = node3_slack_markdown(
-        tier=spec.tier,
-        project_type_tags=spec.project_type_tags,
-        summary=spec.summary,
-    )
+    n3 = _node3_for_spec(spec)
     rs = reply_style()
     if rs == "minimal":
-        reply = (
-            build_context_minimal_line(messages)
-            + "\n\n"
-            + spec.to_slack_brief()
-            + "\n\n"
-            + n3
-        )
+        reply = spec.to_slack_brief() + "\n\n" + n3
     elif rs == "compact":
         reply = (
-            build_context_minimal_line(messages)
-            + "\n\n"
-            + spec.to_slack_brief()
+            spec.to_slack_brief()
             + "\n\n"
             + node2_slack_markdown(spec.tier, spec.project_type_tags)
             + "\n\n"
@@ -71,7 +85,7 @@ def build_slack_mention_reply(
         )
     else:
         reply = (
-            build_context_reply(messages, previews=previews)
+            build_context_reply(messages, previews=previews, google_previews=google_previews)
             + f"\n\n*Phase B — extraction (Node 1)* _(source: {extraction_src_label})_\n"
             + spec.to_slack_block()
             + "\n\n"
@@ -94,8 +108,11 @@ def build_reply_from_paste(thread_text: str, *, notion_excerpt_override: str = "
     text = (thread_text or "").strip()
     messages: list[dict[str, Any]] = [{"user": "paste", "text": text}]
     previews = gather_notion_previews(messages)
-    notion_ex = (notion_excerpt_override or "").strip() or notion_excerpt_for_llm(
-        messages, previews=previews
+    google_previews = gather_google_doc_previews(messages)
+    notion_ex = (notion_excerpt_override or "").strip() or phase_b_excerpt_for_llm(
+        messages,
+        notion_previews=previews,
+        google_previews=google_previews,
     )
     thread_plain = format_thread_preview(messages)
     spec, src = extract_request_spec(thread_plain, notion_ex)
@@ -104,6 +121,7 @@ def build_reply_from_paste(thread_text: str, *, notion_excerpt_override: str = "
         previews,
         spec,
         extraction_src_label=_src_label(src),
+        google_previews=google_previews,
     )
     return reply, src
 

@@ -1,7 +1,7 @@
 """
-Projects & Offers Classification CSV — похожие прошлые проекты по тегам и summary (Phase B).
+Projects & Offers Classification CSV — similar past projects by tags and summary (Phase B).
 
-Без Notion API: положите выгрузку в config/ (см. projects_classification.yaml).
+Without Notion API: place the export in config/ (see projects_classification.yaml).
 """
 
 from __future__ import annotations
@@ -120,12 +120,12 @@ def build_similar_projects_markdown(
     positive = [(s, r) for s, r in scored if s > 0][:n]
 
     lines: list[str] = [
-        "*Похожие проекты (классификация Offers)* "
-        "_пересечение тегов Phase B и полей Capability / Notes / название._",
+        "*Similar projects (Offers classification)* "
+        "_overlap of Phase B tags with Capability / Notes / name._",
     ]
     if not positive:
         lines.append(
-            "_Нет строк с заметным совпадением — расширьте `project_type_tags` или summary в Phase B._"
+            "_No rows with a strong match — broaden `project_type_tags` or summary in Phase B._"
         )
         return "\n".join(lines)
 
@@ -137,7 +137,7 @@ def build_similar_projects_markdown(
         lines.append(f"• *{client}* — {clip}")
         lines.append(f"  _Capability:_ {cap[:200]}{'…' if len(cap) > 200 else ''}_")
 
-    lines.append("_Источник: выгрузка Projects & Offers Classification (CSV в `config/`)._")
+    lines.append("_Source: Projects & Offers Classification export (CSV in `config/`)._")
     return "\n".join(lines)
 
 

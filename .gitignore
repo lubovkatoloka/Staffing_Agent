@@ -9,3 +9,4 @@ __pycache__/
 *.pyc
 node_modules/
 .databricks/
+_paste*.txt

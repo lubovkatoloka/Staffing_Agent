@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 import os
+import sys
+import time
 from pathlib import Path
 from typing import Any, Literal, Optional
 
@@ -26,6 +28,7 @@ def _maybe_project_staffing_markdown(
     project_type_tags: Optional[list[str]],
     summary: str,
     timeout_sec: int,
+    preloaded_ps_rows: Optional[list[dict[str, Any]]] = None,
 ) -> str:
     from staffing_agent.node3_project_staffing import fetch_project_staffing_addon
 
@@ -36,6 +39,7 @@ def _maybe_project_staffing_markdown(
         project_type_tags=project_type_tags or [],
         summary=summary or "",
         timeout_sec=timeout_sec,
+        preloaded_ps_rows=preloaded_ps_rows,
     )
 from staffing_agent.projects_classification import append_similar_projects_to_lines
 from staffing_agent.node3_tier_preview import occupation_preview_caption_suffix, occupation_preview_roles
@@ -60,6 +64,10 @@ from staffing_agent.node3_row_utils import project_role_norm
 _ROOT = Path(__file__).resolve().parent.parent
 
 MIN_OCCUPATION_SQL_LEN = 80
+
+
+def _staffing_stderr(msg: str) -> None:
+    print(msg, file=sys.stderr, flush=True)
 MIN_OPTIONAL_SQL_LEN = 40
 
 
@@ -184,15 +192,15 @@ def _section_optional_query(
     if mode == "compact":
         if "active" in title.lower():
             return [
-                f"*{title}* _({len(rows)} строк в снимке)_ — _список проектов не показываем в компактном ответе._",
-                f"_Полная выгрузка — SQL-файл или Databricks. Profile `{prof}`._",
+                f"*{title}* _({len(rows)} rows in snapshot)_ — _project list omitted in compact reply._",
+                f"_Full export — SQL file or Databricks. Profile `{prof}`._",
             ]
         names = [_sample_name_from_row(r) for r in rows[:COMPACT_PTO_NAME_SAMPLES]]
         tail = f" _+{len(rows) - len(names)}_…" if len(rows) > len(names) else ""
         ns = ", ".join(names)
         return [
-            f"*{title}* _({len(rows)} чел.)_ — {ns}{tail}",
-            f"_Подробности — в `pto.sql` / Databricks. Profile `{prof}`._",
+            f"*{title}* _({len(rows)} people)_ — {ns}{tail}",
+            f"_Details — `pto.sql` / Databricks. Profile `{prof}`._",
         ]
 
     lines = [f"*{title}* _({len(rows)} rows, show {min(max_rows, len(rows))})_", *_format_generic_rows(rows, max_rows=max_rows)]
@@ -233,7 +241,7 @@ def node3_slack_markdown(
     )
 
     spec_blurb = (
-        "_Источник: Databricks (`occupation.sql`, optional PTO / active projects) — "
+        "_Source: Databricks (`occupation.sql`, optional PTO / active projects) — "
         f"<https://www.notion.so/toloka-ai/Staffing-Agent-Decision-Logic-v1-0-32749d0688568183af3bf80ff6aedfd4|Decision Logic v1.0>._"
         if (compact or minimal)
         else (
@@ -251,13 +259,13 @@ def node3_slack_markdown(
 
     if not prof:
         if minimal:
-            return "_Occupation недоступен:_ задайте `DATABRICKS_PROFILE` в `.env` и CLI `databricks`._"
+            return "_Occupation unavailable:_ set `DATABRICKS_PROFILE` in `.env` and install `databricks` CLI._"
         lines.append(
             "_Set `DATABRICKS_PROFILE` in `.env` and install `databricks` CLI. "
             "Add SQL files under `sql/` (see `sql/pto.sql`, `sql/active_projects.sql`)._"
         )
         lines.append("")
-        lines.append(format_role_bucket_fallback("Не задан DATABRICKS_PROFILE", tier=tier))
+        lines.append(format_role_bucket_fallback("DATABRICKS_PROFILE is not set.", tier=tier))
         lines.append("")
         if full:
             lines.append("\n".join(_followup_block(tier, compact=False)))
@@ -275,7 +283,7 @@ def node3_slack_markdown(
                 rel = path_occ.relative_to(_ROOT)
             except ValueError:
                 rel = path_occ
-            return f"_В `{rel}` нет запроса Occupation — вставьте SQL из Notion._"
+            return f"_No Occupation query in `{rel}` — paste SQL from Notion._"
         try:
             rel = path_occ.relative_to(_ROOT)
         except ValueError:
@@ -309,7 +317,7 @@ def node3_slack_markdown(
             )
         )
         lines.append("")
-        lines.append(format_role_bucket_fallback("Добавьте полный SQL в sql/occupation.sql.", tier=tier))
+        lines.append(format_role_bucket_fallback("Add full SQL to sql/occupation.sql.", tier=tier))
         lines.append("")
         if full:
             lines.append("\n".join(_followup_block(tier, compact=False)))
@@ -318,14 +326,20 @@ def node3_slack_markdown(
             )
         return "\n".join(lines)
 
+    _staffing_stderr("[staffing] Databricks: running sql/occupation.sql …")
+    t_occ = time.perf_counter()
     ok, out = _run_query_json_first(sql_occ, timeout_sec=timeout_sec)
+    _staffing_stderr(
+        f"[staffing] Databricks: occupation.sql finished in {time.perf_counter() - t_occ:.1f}s "
+        f"(ok={ok}, ~{len(out)} chars raw output)"
+    )
     if not ok:
         if minimal:
             clip = out[:400] + ("…" if len(out) > 400 else "")
-            return f"_Запрос Occupation не выполнился:_ `{clip}`"
+            return f"_Occupation query failed:_ `{clip}`"
         lines.append(f"_Occupation query failed:_ `{out[:900]}{'…' if len(out) > 900 else ''}`")
         lines.append("")
-        lines.append(format_role_bucket_fallback("Запрос Occupation не выполнен (см. ошибку выше).", tier=tier))
+        lines.append(format_role_bucket_fallback("Occupation query did not run (see error above).", tier=tier))
         lines.append("")
         if full:
             lines.append("\n".join(_followup_block(tier, compact=False)))
@@ -337,14 +351,14 @@ def node3_slack_markdown(
     rows = _try_parse_query_json(out)
     if not rows:
         if minimal:
-            return "_Ответ Occupation не похож на JSON-массив — проверьте выдачу в Databricks._"
+            return "_Occupation response is not a JSON array — check output in Databricks._"
         clip = out[:6000] + ("…" if len(out) > 6000 else "")
         lines.append("_Occupation: raw output (JSON parse failed):_")
         lines.append(f"```{clip}```")
         lines.append("")
         lines.append(
             format_role_bucket_fallback(
-                "Ответ не JSON-массив — не удалось разложить по ролям.",
+                "Response is not a JSON array — could not bucket by role.",
                 tier=tier,
             )
         )
@@ -365,6 +379,14 @@ def node3_slack_markdown(
         preview_n = COMPACT_OCCUPATION_PREVIEW_ROWS if compact else FULL_OCCUPATION_PREVIEW_ROWS
         sorted_rows = sorted(preview_rows, key=sort_key)[:preview_n]
 
+        project_staffing_snapshot: Optional[list[dict[str, Any]]] = None
+        if tier in (1, 2, 3, 4):
+            from staffing_agent.node3_project_staffing import fetch_project_staffing_rows
+
+            project_staffing_snapshot = fetch_project_staffing_rows(
+                timeout_sec=min(timeout_sec, 180),
+            )
+
         rec = build_project_recommendation_markdown(
             rows,
             tier=tier,
@@ -372,6 +394,7 @@ def node3_slack_markdown(
             project_type_tags=project_type_tags or [],
             summary=summary or "",
             detail="minimal" if minimal else "standard",
+            project_staffing_rows=project_staffing_snapshot,
         )
         if minimal:
             ps = _maybe_project_staffing_markdown(
@@ -381,6 +404,7 @@ def node3_slack_markdown(
                 project_type_tags=project_type_tags,
                 summary=summary or "",
                 timeout_sec=min(timeout_sec, 180),
+                preloaded_ps_rows=project_staffing_snapshot,
             )
             return f"{rec}\n\n{ps}" if ps else rec
 
@@ -388,7 +412,7 @@ def node3_slack_markdown(
             out: list[str] = []
             if compact:
                 out.append(
-                    f"*Сводка загрузки (Occupation)* _({len(rows)} строк в SQL; "
+                    f"*Load summary (Occupation)* _({len(rows)} rows in SQL; "
                     f"{occupation_preview_caption_suffix(tier, max_shown=preview_n)})_"
                 )
             else:
@@ -398,7 +422,7 @@ def node3_slack_markdown(
                 )
             if role_filter is not None and not preview_rows:
                 out.append(
-                    "_Никто не попал в фильтр ролей для этого Tier — проверьте `project_role` в выдаче или смотрите полный результат в Databricks._"
+                    "_No one matched the role filter for this Tier — check `project_role` in the output or see full result in Databricks._"
                 )
             for r in sorted_rows:
                 occ = _occupation_value(r)
@@ -415,7 +439,7 @@ def node3_slack_markdown(
             fb = float(occ_cfg.get("free_below", 0.5))
             pb = float(occ_cfg.get("partial_below", 0.8))
             out.append(
-                f"_Полосы: FREE до {fb:.0%}, PARTIAL до {pb:.0%} (`config/decision_logic.yaml`)._"
+                f"_Bands: FREE below {fb:.0%}, PARTIAL below {pb:.0%} (`config/decision_logic.yaml`)._"
             )
             return out
 
@@ -423,7 +447,7 @@ def node3_slack_markdown(
             lines.append(rec)
             lines.append("")
             lines.extend(_occ_table_lines())
-            lines.append("_Полный список — в Databricks / `occupation.sql`._")
+            lines.append("_Full list — Databricks / `occupation.sql`._")
             ps_c = _maybe_project_staffing_markdown(
                 rows,
                 tier=tier,
@@ -431,6 +455,7 @@ def node3_slack_markdown(
                 project_type_tags=project_type_tags,
                 summary=summary or "",
                 timeout_sec=min(timeout_sec, 180),
+                preloaded_ps_rows=project_staffing_snapshot,
             )
             if ps_c:
                 lines.append("")

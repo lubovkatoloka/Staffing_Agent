@@ -4,3 +4,5 @@ anthropic>=0.40,<1
 pydantic>=2,<3
 pyyaml>=6,<7
 pytest>=8,<9
+google-api-python-client>=2.100,<3
+google-auth>=2.23,<3

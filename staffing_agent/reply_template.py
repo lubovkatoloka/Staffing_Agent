@@ -1,26 +1,26 @@
 """
 Slack reply shape for @mention pipeline (paste_run + socket).
 
-**Цель:** не засыпать пользователя сырыми таблицами; держать «ответ бота» читаемым.
+**Goal:** avoid dumping raw tables; keep the bot reply readable.
 
-## Шаблон ответа (порядок секций)
+## Reply template (section order)
 
-1. **Phase A — context** — кратко: число сообщений, URL, текст треда (preview).
-2. **Phase B — extraction (Node 1)** — JSON `RequestSpec` (tier, теги, summary).
-3. **Node 2** — правила пула по Tier (коротко).
+1. **Phase A — context** — briefly: message count, URLs, thread text (preview).
+2. **Phase B — extraction (Node 1)** — JSON `RequestSpec` (tier, tags, summary).
+3. **Node 2** — Tier pool rules (short).
 4. **Node 3 — availability** (Databricks):
-   - **compact (по умолчанию):** сначала *Рекомендация: кто может взять проект*, затем короткая сводка загрузки
-     (первые N строк Occupation по Tier-фильтру), PTO и Active projects — только счётчики/имена, без простыней.
-   - **full:** длинный чеклист спеки, до 15 строк таблицы, ведра по ролям, полные выборки optional SQL.
-5. **Decision Logic — follow-up** — в compact: одна строка + ссылки на Notion; в full: развёрнутые Node 4 / 4.5 / 5.
-6. **Похожие проекты** — опционально из CSV «Projects & Offers Classification» (`config/projects_classification.yaml`) по тегам Phase B.
-7. **Phase C** — демо полос + подсказка DBX (коротко).
+   - **compact:** first *Recommendation: who can take the project*, then a short load summary
+     (first N Occupation rows with Tier filter), PTO and Active projects — counts/names only, no walls of text.
+   - **full:** long spec checklist, up to 15 table rows, role buckets, full optional SQL pulls.
+5. **Decision Logic — follow-up** — in compact: one line + Notion links; in full: expanded Node 4 / 4.5 / 5.
+6. **Similar projects** — optional from CSV “Projects & Offers Classification” (`config/projects_classification.yaml`) by Phase B tags.
+7. **Phase C** — demo bands + short DBX hint.
 
-Переключение: env `STAFFING_AGENT_REPLY_STYLE` = `minimal` | `compact` | `full` (default: minimal).
+Switch: env `STAFFING_AGENT_REPLY_STYLE` = `minimal` | `compact` | `full` (default: minimal).
 
-- **minimal** — краткое саммари запроса + рекомендация и короткое «почему» (без JSON, без списков исключений, без PTO/похожих проектов/Phase C).
-- **compact** — саммари + Node 2–3 с превью Occupation; без PTO/active/follow-up/похожих/Phase C.
-- **full** — полный вывод (как раньше).
+- **minimal** — short request summary + recommendation and short “why” (no JSON, no exclusion lists, no PTO/similar/Phase C).
+- **compact** — summary + Nodes 2–3 with Occupation preview; no PTO/active/follow-up/similar/Phase C.
+- **full** — full output (as before).
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ def reply_style() -> ReplyStyle:
     return "minimal"
 
 
-# Лимиты для compact-режима
+# Limits for compact mode
 COMPACT_OCCUPATION_PREVIEW_ROWS = 5
 FULL_OCCUPATION_PREVIEW_ROWS = 15
 COMPACT_PTO_NAME_SAMPLES = 5

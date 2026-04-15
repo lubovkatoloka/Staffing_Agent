@@ -9,16 +9,16 @@ NOTION_DL = "https://www.notion.so/toloka-ai/Staffing-Agent-Decision-Logic-v1-0-
 
 def node3_checklist_intro() -> str:
     return (
-        "*Node 3 — что делаем (по спеке)*\n"
-        "1. *Occupation SQL* — коэффициенты по матрице, суммарная загрузка по ролям на проектах.\n"
-        "2. *PTO SQL* — кто в отпуске / out today (отдельный запрос ниже).\n"
-        "3. В финальной таблице уже есть `project_occupation`, `pto` и итог `occupation` "
-        "(как в Notion: total = project + PTO-коэффициент).\n"
-        "4. Полосы *FREE / PARTIAL / BUSY / …* — из `config/decision_logic.yaml`; "
-        "*UNVERIFIED* при 0% без подтверждённой занятости — по спеке, не FREE.\n"
-        "5. *Tier из Phase B (Node 1)* задаёт, *кого стафим*; таблица Occupation ниже при известном Tier "
-        "показывает только роли из Node 2 (например Tier 2 → SoE/DPM).\n"
-        f"_Полная спека:_ <{NOTION_DL}|Decision Logic v1.0>\n"
+        "*Node 3 — what we do (per spec)*\n"
+        "1. *Occupation SQL* — matrix coefficients, total load by role on projects.\n"
+        "2. *PTO SQL* — who is on PTO / out today (separate query below).\n"
+        "3. The final table already has `project_occupation`, `pto`, and total `occupation` "
+        "(as in Notion: total = project + PTO coefficient).\n"
+        "4. Bands *FREE / PARTIAL / BUSY / …* — from `config/decision_logic.yaml`; "
+        "*UNVERIFIED* at 0% without confirmed load — per spec, not FREE.\n"
+        "5. *Tier from Phase B (Node 1)* defines *who we staff*; the Occupation table below, when Tier is known, "
+        "shows only Node 2 roles (e.g. Tier 2 → SoE/DPM).\n"
+        f"_Full spec:_ <{NOTION_DL}|Decision Logic v1.0>\n"
     )
 
 
@@ -26,24 +26,24 @@ def node4_section_markdown(tier: Optional[int]) -> str:
     tier_hint = ""
     if tier == 2:
         tier_hint = (
-            "_Ваш Tier 2: минимальная команда = *SO (SoE или DPM)*; "
-            "WFM/QM в составе Tier 2 по умолчанию не требуются для «есть ли матч»._\n"
+            "_Your Tier 2: minimum team = *SO (SoE or DPM)*; "
+            "WFM/QM are not required in Tier 2 by default for “is there a match”._\n"
         )
     lines = [
         "*Node 4 — Is there a match?*",
-        "*Целевой состав по Tier (из спеки):*",
-        "• Tier 1 — SO (DPM или WFM) + WFM + QM",
-        "• Tier 2 — SO (SoE или DPM в роли SO)",
-        "• Tier 3 — SO (SSoE или DPM) + SoE + WFM",
-        "• Tier 4 — SO (DPM) + SSoE + SoE + WFM + Commercial",
+        "*Target composition by Tier (from spec):*",
+        "• Tier 1 — SO (DPM or WFM) + WFM + QM · ~1.3 FTE",
+        "• Tier 2 — SO (SoE or DPM) + WFM + QM when not SeSe · ~1.3 FTE (or <1 with SeSe)",
+        "• Tier 3 — SO (SSoE or DPM) + SoE + WFM · ~1.7 FTE",
+        "• Tier 4 — SO (SSoE or DPM) + SoE + WFM + SE · ~3 FTE",
         "",
-        "*Match* = по каждой *требуемой* роли есть хотя бы один кандидат *FREE* или *SOFT*.",
-        "*Если YES* — предложить состав; *если NO* — какие роли не закрыты → Node 5.",
+        "*Match* = for each *required* role there is at least one *FREE* or *SOFT* candidate.",
+        "*If YES* — propose a team; *if NO* — which roles are open → Node 5.",
         "",
-        "*Ранжирование (Tier 1–2, domain не обязателен):* availability → SO status → seniority.",
-        "*Ранжирование (Tier 3–4):* сначала *domain / tag overlap*, затем availability → SO status → seniority.",
+        "*Ranking (Tier 1–2, domain optional):* availability → SO status → seniority.",
+        "*Ranking (Tier 3–4):* *domain / tag overlap* first, then availability → SO status → seniority.",
         tier_hint,
-        f"_Детали:_ <{NOTION_DL}|Decision Logic — Node 4>",
+        f"_Details:_ <{NOTION_DL}|Decision Logic — Node 4>",
     ]
     return "\n".join(lines)
 
@@ -51,40 +51,40 @@ def node4_section_markdown(tier: Optional[int]) -> str:
 def node4_5_section_markdown() -> str:
     return (
         "*Node 4.5 — Freeing up soon*\n"
-        "_Люди, которые сейчас заняты, но освобождаются в горизонте ~8 недель — для планирования заранее._\n"
-        f"_Спека:_ <{NOTION_DL}|Node 4.5>"
+        "_People who are busy now but free up within ~8 weeks — for forward planning._\n"
+        f"_Spec:_ <{NOTION_DL}|Node 4.5>"
     )
 
 
 def node5_section_markdown() -> str:
     return (
         "*Node 5 — Can we rebalance?*\n"
-        "Если нет полного матча: можно ли *освободить* кого-то с SOFT/BUSY (доноры: дедлайн на неделе, "
-        "discovery/scoping как доноры, статус AT_RISK/BEHIND блокирует и т.д.).\n"
-        "*Если NO* — эскалация Directors / Delivery Leads.\n"
-        f"_Спека:_ <{NOTION_DL}|Node 5>"
+        "If there is no full match: can we *free* someone from SOFT/BUSY (donors: deadline this week, "
+        "discovery/scoping as donors, AT_RISK/BEHIND blocks, etc.).\n"
+        "*If NO* — escalate to Directors / Delivery Leads.\n"
+        f"_Spec:_ <{NOTION_DL}|Node 5>"
     )
 
 
 def node3_checklist_intro_compact() -> str:
-    """Один абзац вместо длинного чеклиста Node 3."""
+    """One paragraph instead of the long Node 3 checklist."""
     return (
-        "_Загрузка: Occupation SQL + PTO в Databricks; полосы FREE/PARTIAL из `config/decision_logic.yaml`; "
-        f"Tier из Phase B задаёт фильтр ролей. Спека: <{NOTION_DL}|Decision Logic v1.0>._"
+        "_Load: Occupation SQL + PTO in Databricks; FREE/PARTIAL bands from `config/decision_logic.yaml`; "
+        f"Tier from Phase B sets the role filter. Spec: <{NOTION_DL}|Decision Logic v1.0>._"
     )
 
 
 def followup_decision_nodes_compact(tier: Optional[int]) -> str:
-    """Node 4–5 без таблиц — только ссылки и одна строка по матчу."""
+    """Node 4–5 without tables — links and one line on match."""
     th = ""
     if tier == 2:
-        th = "_Tier 2: достаточно одного SO (SoE или DPM)._ "
+        th = "_Tier 2: one SO (SoE or DPM) is enough._ "
     return (
-        "*Дальше по Decision Logic*\n"
+        "*Next in Decision Logic*\n"
         f"{th}"
-        "• Node 4 — матч состава / ранжирование — "
-        f"<{NOTION_DL}|спека>\n"
-        f"• Node 4.5 — freeing up soon — <{NOTION_DL}|спека>\n"
-        f"• Node 5 — rebalance — <{NOTION_DL}|спека>\n"
-        "_Полные таблицы и выгрузки — в Databricks / Notion, не в этом сообщении._"
+        "• Node 4 — team match / ranking — "
+        f"<{NOTION_DL}|spec>\n"
+        f"• Node 4.5 — freeing up soon — <{NOTION_DL}|spec>\n"
+        f"• Node 5 — rebalance — <{NOTION_DL}|spec>\n"
+        "_Full tables and exports are in Databricks / Notion, not in this message._"
     )

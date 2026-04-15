@@ -3,27 +3,106 @@
 
 framework_url: "https://www.notion.so/toloka-ai/Project-Classification-Framework-27149d0688568051b1d3e712bdf9d4e5"
 
+# Injected into Phase B system prompt after `classification_rules`. The app does not fetch Notion over HTTP;
+# the model is expected to use its knowledge of this framework from the URL + the rules below.
+framework_alignment: |
+  ### Project Classification Framework — reasoning style (`tier_rationale` / `notes`)
+
+  The **canonical** framework (Pipeline, QC/automation, Expertise, Commercial, Infra, Ownership) lives at the URL above.
+  You cannot browse Notion from here; use the **full Slack thread** (and any pasted Notion/Docs excerpts in the user message)
+  plus these rules to classify.
+
+  When there is enough deal/product context — including **deal_notification** with exploration only — you may write a **condensed
+  SCQA-style** read in `tier_rationale` (and extra ambiguity / risk flags in `notes`): situation, complication (fuzzy scope,
+  unclear OTS vs managed, sourcing vs net-new data, etc.), implied question, then **Answer** as **tier (1–4)** and
+  **complexity_class (S/M/L)** with short signals mapped to framework dimensions (pipeline depth, QC, domain expertise, client tier,
+  infra). This mirrors an internal deal review, not a chat reply to the client.
+
+  If there is **no** staffing/resourcing ask yet, `tier` may stay **null**; still give a **hypothesis** in `tier_rationale`
+  (e.g. “likely Tier 3 / M if delivery staffs this shape”) and label uncertainty in `confidence` / `notes`.
+
+  Keep `summary` to **one short paragraph**; put longer structured reasoning in `tier_rationale` and `notes`.
+
+# Shown in Phase B system prompt — facts the model must NOT invent (SQL/HR run in the app).
+system_boundary: |
+  You **do not** execute SQL, query Databricks, call Attio/CRM APIs, or read HiBob. You **do not** compute
+  occupation %, PTO, ghost-assignment discounts, load trends, or ranking scores. The **application** runs
+  Occupation / project_staffing / PTO queries and merges People & Tags after you output JSON.
+  Your job here is **classification and extraction only**: `thread_kind`, tier (when applicable), tags,
+  summary, and rationale — so Node 2–3 can apply Decision Logic on real data.
+
 # Short rules the model must apply when there is any staffing/project context:
 classification_rules: |
-  You MUST classify Node 1 for every staffing or project request (not empty pings).
+  ### Step 0 — Classify the thread (`thread_kind` field)
+
+  Set `thread_kind` **for every** thread (required field in JSON):
+
+  - **deal_notification** — New deal / Attio-style notification, client + deal name + value/stage, or BD exploration
+    (“I’m exploring…”, “will come back with details”) **without** an explicit Delivery staffing ask yet.
+  - **staffing_request** — Explicit ask: who can own/support, DPM/SoE/WFM needs, “who can join a call” for delivery,
+    headcount, ownership, or clear resourcing timeline.
+  - **capacity_question** — Primarily “who’s free?”, “team capacity”, “availability this week” **without** a specific
+    new deal staffing decision. (If the app routed to team capacity without calling you, you may not see this.)
+  - **unclear** — Mixed or ambiguous. **Do not** use unclear when the thread contains a clear
+    **deal / Attio / client + scope narrative** (even if the latest message is only @bot): set
+    **deal_notification** and summarize the opportunity in `summary`; `tier` stays null until someone
+    asks for Delivery staffing / roles / ownership explicitly.
+
+  **Type A (deal feed)** usually maps to **deal_notification** until someone asks to staff it.
+  **Type B (direct staffing)** maps to **staffing_request**.
+  **Type C (capacity snapshot)** maps to **capacity_question** when that is the main intent.
+
+  Classify Node 1 **tier** only when the thread is actually asking for staffing / resourcing / who can own a
+  delivery workstream (or clearly implies it). Do not invent a Tier from product marketing text alone.
+  For **deal_notification** with **no** staffing ask yet, set `tier` and `complexity_class` to **null** and explain
+  in `tier_rationale` / `notes` that resourcing was not requested — **unless** the text explicitly asks who should run it.
 
   Complexity S / M / L (signals from Project Classification Framework):
   - S: standard Toloka capabilities, linear workflows, automated QC, low coordination — often Tier 1–2.
   - M: multi-stage pipelines, domain evals, several skill types, medium stakeholder load — often Tier 3.
   - L: custom infra, agentic/multi-modal heavy R&D, strategic flagship risk, 6+ FTE — often Tier 4.
 
-  Tier mapping (Decision Logic):
-  - Tier 1: client platform / raw supply (S), DPM+WFM heavy; examples: client platform work.
-  - Tier 2: standard Toloka pipeline (S), SoE-led; preferences, typical evals, multilingual eval when still "standard pipeline".
-  - Tier 3: multi-stage / domain expertise (M); SSoE or DPM + SoE + WFM; tag/domain match matters for pool.
-  - Tier 4: strategic / large (L); DPM + full team including Commercial.
+  Tier mapping (Decision Logic — ownership model):
+  - Tier 1 (S): SO = DPM or WFM; + WFM + QM · ~1.3 FTE.
+  - Tier 2 (S): SO = SoE or DPM; + WFM + QM when not SeSe · ~1.3 FTE (or <1 with SeSe).
+  - Tier 3 (M): SO = SSoE or DPM; + SoE + WFM · ~1.7 FTE; domain match matters.
+  - Tier 4 (L): SO = SSoE or DPM; + SoE + WFM + SE · ~3 FTE; strategic / high-risk.
+
+  ### Tier 2 (S) vs Tier 3 (M) — choose carefully
+  - **Tier 2 (S)** — *standard Toloka pipeline*: relatively linear evals / preferences, **repeatable** scope, **low multi-stage orchestration**. Good fit when the work is "classic" pipeline delivery without heavy domain + multi-surface coordination.
+  - **Tier 3 (M)** — **multi-stage**, **domain expertise**, **several delivery surfaces** (e.g. many apps + test-case matrices + RL / agent-style harness), **strategic enterprise pilot** with a **ramp** (e.g. 12 apps → 50 → 100), procurement/SOW complexity, **DPM + SoE + WFM**-shaped ownership. **Prefer Tier 3** for:
+    - **RL Gym** / similar harness engagements, **synthetic app fleets**, multi-app workflows, 100+ test cases with breakdown rules.
+    - Flagship client **pilots** (e.g. Apple-scale) where delivery is **not** "just another preferences eval".
+    - Threads that say test cases are **~90%** but need **DPM/SoE + experts + QA** to land a **complex pilot** with **scale story** — that is **M complexity**, **Tier 3**, not Tier 2.
+
+  Do **not** default "evals + apps" to Tier 2 when the thread describes **multi-stage domain work + pilot + expansion path** — that pattern is **Tier 3** with `complexity_class` **"M"**.
 
   Heuristics (use only as hints; justify in tier_rationale):
-  - Intro / discovery / "join a call" without scope is still a staffing request — infer best tier from product words (evals, TTS, multilingual → often Tier 2 unless clearly M/L).
-  - "Evals" + standard pipeline wording → usually Tier 2 (S).
-  - If text is ONLY @mentions with zero project content, tier may be null.
+  - Intro / discovery / "join a call" **with** product scope can be a staffing-related thread — infer tier from product words when someone is trying to staff or scope resourcing.
+  - Simple "evals" + **standard single-stream pipeline** → often Tier 2 (S) **only if** there is **no** multi-stage / RL-gym / strategic pilot / large multi-app matrix pattern.
+  - If text is ONLY @mentions with zero project content, tier should be null.
+  - If the **only** new text is a bare @bot ping but **earlier messages** include deal name, client,
+    requirements, or links, treat the thread as **deal_notification** (or **staffing_request** if they
+    clearly ask who runs delivery); do **not** return `thread_kind` unclear solely because the trigger
+    message has no words.
+
+  ### When `tier` MUST be null (not a staffing classification)
+  Set `tier` and `complexity_class` to **null** when the thread is **not** asking Delivery to staff people, assign owners, or commit capacity — even if it mentions projects, tech, or scale.
+
+  Typical **not staffing** threads (non-exhaustive):
+  - A Google Doc link + **"better phrasing"**, rewrite, FAQ, customer-facing answer, proposal wording — **no** ask for roles, headcount, dates, or "who can take this".
+  - Long **explainer** for stakeholders (how apps are built, grading is deterministic, roadmap, "ramp to N apps") **without** a resourcing question.
+  - Sharing **collateral for review** or pasting **deal narrative** where the only intent is messaging, not staffing.
+  - **Do not** infer Tier from domain keywords alone (React, evals, 100 apps, agentic) if there is **no** staffing or delivery-ownership ask.
+
+  When `tier` is null: keep `project_type_tags` empty or at most 1–2 loose labels; set `confidence` toward the low end (e.g. 0.1–0.4); use `tier_rationale` and/or `notes` to say clearly that this is not a staffing request (or that deal context is exploratory); `summary` should describe what the thread actually is in 1–2 sentences.
+
+  ### Ambiguous input
+  If deal type / offering / staffing intent is missing, set `thread_kind` to **unclear** or the best fit and use `notes` to say what is missing (e.g. OTS vs managed, or whether Delivery should staff now). Prefer `tier` null over guessing.
 
 output_requirements: |
-  Always fill `tier_rationale` (1–4 sentences): complexity S/M/L + why tier 1–4.
-  Fill `complexity_class` with "S", "M", or "L" when tier is not null.
-  Set `tier` to an integer 1–4 whenever there is substantive project/staffing context.
+  Always set **`thread_kind`** to one of: `deal_notification`, `staffing_request`, `capacity_question`, `unclear`.
+
+  If the thread **requests staffing or clear project resourcing**: fill `tier_rationale` (1–4 sentences), set `complexity_class` to "S", "M", or "L" when `tier` is set, and set `tier` to 1–4.
+  If the thread is **not** a staffing request: set `tier` to null, `complexity_class` to null; `tier_rationale` should explain why; `summary` describes the thread; `confidence` reflects uncertainty (lower when not staffing).
+  If ambiguous: prefer `tier` null and explain in `notes` what is missing (e.g. Tier, roles, timeline); keep `thread_kind` honest.

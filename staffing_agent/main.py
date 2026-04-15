@@ -42,7 +42,24 @@ def main() -> None:
         metavar="CHANNEL_ID",
         help="With --process-paste: post result to this channel (e.g. C0123ABC); bot must be /invite'd",
     )
+    parser.add_argument(
+        "--fetch-google-doc",
+        metavar="URL_OR_DOC_ID",
+        help="Print plain text of a Google Doc (API; needs service account JSON in .env). URL or raw document id.",
+    )
     args = parser.parse_args()
+    if args.fetch_google_doc:
+        from staffing_agent.google_docs_fetch import fetch_google_doc, fetch_google_doc_from_url
+
+        raw = args.fetch_google_doc.strip()
+        info = fetch_google_doc_from_url(raw) if raw.startswith("http") else fetch_google_doc(raw)
+        if info.get("error"):
+            print(f"FETCH_GOOGLE_DOC FAILED: {info['error']}", file=sys.stderr, flush=True)
+            raise SystemExit(1)
+        title = info.get("title") or ""
+        text = info.get("text") or ""
+        print(f"# {title}\n\n{text}")
+        raise SystemExit(0)
     if args.check:
         try:
             check_slack_connection()

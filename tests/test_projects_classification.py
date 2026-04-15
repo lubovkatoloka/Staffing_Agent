@@ -30,7 +30,7 @@ def test_build_similar_with_fixture_csv(tmp_path: Path, monkeypatch):
 
     monkeypatch.setattr(pc, "default_csv_path", lambda: p)
     text = build_similar_projects_markdown(["TTS"], "evaluation project", max_similar=3)
-    assert "Похожие проекты" in text
+    assert "Similar projects" in text
     assert "Acme" in text or "P1" in text
 
 

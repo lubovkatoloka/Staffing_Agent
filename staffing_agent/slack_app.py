@@ -19,8 +19,9 @@ from staffing_agent.paste_run import build_slack_mention_reply
 from staffing_agent.thread_context import (
     exclude_bot_user_messages,
     format_thread_preview,
+    gather_google_doc_previews,
     gather_notion_previews,
-    notion_excerpt_for_llm,
+    phase_b_excerpt_for_llm,
 )
 
 # Load `.env` from repo root (parent of `staffing_agent/`), not from shell cwd.
@@ -159,15 +160,20 @@ def create_app() -> App:
 
         thread_plain = format_thread_preview(messages)
         print(
-            "[staffing] Notion: fetching page previews for links in thread (if any; may take a few seconds)…",
+            "[staffing] Notion + Google Docs: fetching linked previews (if any; may take a few seconds)…",
             file=sys.stderr,
             flush=True,
         )
         previews = gather_notion_previews(messages)
-        notion_ex = notion_excerpt_for_llm(messages, previews=previews)
+        google_previews = gather_google_doc_previews(messages)
+        notion_ex = phase_b_excerpt_for_llm(
+            messages,
+            notion_previews=previews,
+            google_previews=google_previews,
+        )
         print(
             f"[staffing] Phase B: extraction starting (thread={len(thread_plain)} chars, "
-            f"notion_excerpt={len(notion_ex)} chars). Anthropic can take 15–40s — not frozen.\n",
+            f"linked_excerpt={len(notion_ex)} chars). Anthropic can take 15–40s — not frozen.\n",
             file=sys.stderr,
             flush=True,
         )
@@ -183,6 +189,7 @@ def create_app() -> App:
         src_label = {
             "mock": "mock (set ANTHROPIC_API_KEY; unset STAFFING_AGENT_MOCK_LLM)",
             "anthropic": "Anthropic Opus",
+            "anthropic_fallback": "Anthropic failed — deal-feed heuristic summary",
             "error": "error",
         }.get(src, src)
 
@@ -196,7 +203,11 @@ def create_app() -> App:
             previews,
             spec,
             extraction_src_label=src_label,
+            google_previews=google_previews,
         )
+
+        if len(reply) > 12000:
+            reply = reply[:11900] + "\n```\n… (truncated)"
 
         try:
             client.chat_postMessage(channel=channel, thread_ts=root_ts, text=reply)

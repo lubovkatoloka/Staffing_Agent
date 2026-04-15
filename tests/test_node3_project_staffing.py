@@ -32,6 +32,29 @@ def test_format_empty_when_no_names() -> None:
 
 
 def test_format_no_match_shows_note() -> None:
-    rows = [{"name": "P", "dpm": "Other Person"}]
+    rows = [{"name": "P", "dpm": "Other Person", "status": "ON_TRACK"}]
     text = format_project_staffing_markdown(rows, ["Alice"])
-    assert "нет проектов" in text
+    assert "no active orders" in text
+
+
+def test_all_terminal_statuses_returns_empty() -> None:
+    rows = [{"name": "Dead", "status": "COMPLETED", "dpm": "Alice - dpm"}]
+    assert format_project_staffing_markdown(rows, ["Alice"]) == ""
+
+
+def test_excludes_completed_archived_canceled() -> None:
+    rows = [
+        {
+            "name": "Dead",
+            "status": "COMPLETED",
+            "dpm": "Alice Smith - dpm",
+        },
+        {
+            "name": "Live",
+            "status": "ON_TRACK",
+            "dpm": "Alice Smith - dpm",
+        },
+    ]
+    text = format_project_staffing_markdown(rows, ["Alice Smith"])
+    assert "Dead" not in text
+    assert "Live" in text

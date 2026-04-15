@@ -98,22 +98,22 @@ def format_role_bucket_section(
 
     if hide_wfm:
         lines: list[str] = [
-            "*По ролям — кандидаты под Node 2 (Tier 2)*",
-            "_Только *SO* (SoE или DPM). WFM/QM в минимальный состав Tier 2 не входят — блок WFM не показываем._",
+            "*By role — candidates for Node 2 (Tier 2)*",
+            "_Only *SO* (SoE or DPM). WFM/QM are not in the Tier 2 minimum team — WFM block hidden._",
         ]
     else:
         lines = [
-            "*По ролям — кого смотреть первым (по загрузке из Node 3)*",
-            "_SO в спеке = SoE или DPM; ниже — ведра по `project_role` из SQL._",
+            "*By role — who to look at first (from Node 3 load)*",
+            "_SO in spec = SoE or DPM; below — buckets by `project_role` from SQL._",
         ]
 
     so_pool = _take_bucket(rows, is_so_pool, decision_cfg=decision_cfg, max_n=max_per_bucket)
-    lines.append("*SO (пул SoE + DPM, самые свободные):*")
+    lines.append("*SO (SoE + DPM pool, freest first):*")
     if so_pool:
         for r in so_pool:
             lines.append(_line_for_row(r, decision_cfg=decision_cfg))
     else:
-        lines.append("_нет SoE/DPM в выборке_")
+        lines.append("_no SoE/DPM in sample_")
 
     soe = _take_bucket(rows, is_soe, decision_cfg=decision_cfg, max_n=max_per_bucket)
     lines.append("*SOE / SSoE:*")
@@ -121,7 +121,7 @@ def format_role_bucket_section(
         for r in soe:
             lines.append(_line_for_row(r, decision_cfg=decision_cfg))
     else:
-        lines.append("_нет_")
+        lines.append("_none_")
 
     dpm = _take_bucket(rows, is_dpm, decision_cfg=decision_cfg, max_n=max_per_bucket)
     lines.append("*DPM:*")
@@ -129,7 +129,7 @@ def format_role_bucket_section(
         for r in dpm:
             lines.append(_line_for_row(r, decision_cfg=decision_cfg))
     else:
-        lines.append("_нет_")
+        lines.append("_none_")
 
     if not hide_wfm:
         wfm = _take_bucket(rows, is_wfm, decision_cfg=decision_cfg, max_n=max_per_bucket)
@@ -138,18 +138,18 @@ def format_role_bucket_section(
             for r in wfm:
                 lines.append(_line_for_row(r, decision_cfg=decision_cfg))
         else:
-            lines.append("_нет_")
+            lines.append("_none_")
 
     return "\n".join(lines)
 
 
 def format_role_bucket_fallback(reason: str, *, tier: Optional[int] = None) -> str:
-    """When SQL недоступен — шаблон + причина."""
+    """When SQL is unavailable — template + reason."""
     hide_wfm = tier == 2
     head = (
-        "*По ролям — кандидаты под Node 2 (Tier 2)*\n"
+        "*By role — candidates for Node 2 (Tier 2)*\n"
         if hide_wfm
-        else "*По ролям — кого смотреть (нужны данные Databricks)*\n"
+        else "*By role — who to look at (Databricks data needed)*\n"
     )
     wfm_line = (
         ""
@@ -157,7 +157,7 @@ def format_role_bucket_fallback(reason: str, *, tier: Optional[int] = None) -> s
         else "*WFM / WFC:* _—_\n"
     )
     wfm_note = (
-        "_WFM не входят в минимальный состав Tier 2 — блок не показывается._\n"
+        "_WFM are not in the Tier 2 minimum team — block omitted._\n"
         if hide_wfm
         else ""
     )
@@ -169,5 +169,5 @@ def format_role_bucket_fallback(reason: str, *, tier: Optional[int] = None) -> s
         "*DPM:* _—_\n"
         f"{wfm_line}"
         f"{wfm_note}"
-        "_После успешного `sql/occupation.sql` здесь появятся люди по `project_role`._"
+        "_After a successful `sql/occupation.sql`, people appear here by `project_role`._"
     )

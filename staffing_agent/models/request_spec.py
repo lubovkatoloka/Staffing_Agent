@@ -10,6 +10,17 @@ from pydantic import BaseModel, Field, field_validator
 class RequestSpec(BaseModel):
     """LLM extraction from Slack thread (+ optional Notion excerpts)."""
 
+    thread_kind: Optional[
+        Literal["deal_notification", "staffing_request", "capacity_question", "unclear"]
+    ] = Field(
+        None,
+        description=(
+            "Step 0 — what the thread is: deal_notification (Attio/CRM/exploration), "
+            "staffing_request (explicit resourcing), capacity_question (who's free / capacity), "
+            "unclear. Set capacity_question only if the thread is primarily a capacity ask; "
+            "the app may route capacity without LLM when phrases match."
+        ),
+    )
     tier: Optional[int] = Field(None, description="Project tier 1–4 (required when there is staffing/project context)")
     complexity_class: Optional[Literal["S", "M", "L"]] = Field(
         None,
@@ -17,7 +28,11 @@ class RequestSpec(BaseModel):
     )
     tier_rationale: str = Field(
         "",
-        description="Node 1: why this tier + complexity (1–4 sentences)",
+        description=(
+            "Node 1: why this tier + complexity (S/M/L). May include SCQA-style reasoning and framework signals "
+            "(pipeline, QC, expertise, client, infra) per Project Classification Framework — often several sentences "
+            "or short bullets; keep summary short and put depth here."
+        ),
     )
     project_type_tags: List[str] = Field(default_factory=list)
     summary: str = Field("", description="One short paragraph")
@@ -25,7 +40,10 @@ class RequestSpec(BaseModel):
         None, description="ISO date or free-text timing hint if any"
     )
     confidence: float = Field(0.0, ge=0.0, le=1.0)
-    notes: str = Field("", description="Ambiguity, missing info, assumptions")
+    notes: str = Field(
+        "",
+        description="Ambiguity, risk flags, what to clarify with the client, or assumptions not in tier_rationale.",
+    )
 
     @field_validator("tier")
     @classmethod
@@ -43,18 +61,23 @@ class RequestSpec(BaseModel):
         return "```json\n" + json.dumps(data, ensure_ascii=False, indent=2) + "\n```"
 
     def to_slack_brief(self) -> str:
-        """Short human-readable summary for Slack (no JSON)."""
+        """Short human-readable summary for Slack (no JSON). Omits internal labels like thread_kind for public replies."""
         parts: list[str] = []
         if self.tier is not None:
             tier_line = f"*Tier {self.tier}*"
             if self.complexity_class:
-                tier_line += f" · класс {self.complexity_class}"
+                tier_line += f" · class {self.complexity_class}"
             parts.append(tier_line)
         if self.project_type_tags:
-            parts.append("_Тип запроса:_ " + ", ".join(self.project_type_tags))
-        body = (self.summary or "").strip()
-        if not body and (self.tier_rationale or "").strip():
-            body = (self.tier_rationale or "").strip()
+            parts.append("_Request type:_ " + ", ".join(self.project_type_tags))
+        summ = (self.summary or "").strip()
+        tr = (self.tier_rationale or "").strip()
+        if summ and tr:
+            body = f"{summ}\n\n{tr}" if tr not in summ else summ
+        elif summ:
+            body = summ
+        else:
+            body = tr
         if body:
             parts.append(body)
-        return "\n".join(parts) if parts else "_Нет краткого описания в Phase B._"
+        return "\n".join(parts) if parts else "_No brief summary in Phase B._"

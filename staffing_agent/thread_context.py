@@ -6,6 +6,11 @@ import os
 import re
 from typing import Any
 
+from staffing_agent.google_docs_fetch import (
+    credentials_configured as google_credentials_configured,
+    fetch_google_doc,
+    google_doc_id_from_url,
+)
 from staffing_agent.notion_fetch import fetch_page_preview, notion_page_id_from_url
 
 URL_RE = re.compile(r"https?://[^\s<>\]]+", re.IGNORECASE)
@@ -85,7 +90,18 @@ def collect_urls_from_messages(messages: list[dict[str, Any]]) -> list[str]:
     return list(seen.keys())
 
 
-def format_thread_preview(messages: list[dict[str, Any]], max_chars: int = 3500) -> str:
+def default_thread_preview_max_chars() -> int:
+    """Env STAFFING_THREAD_PREVIEW_MAX_CHARS (default 50000) caps Phase B thread text; raise for long deal threads."""
+    raw = (os.environ.get("STAFFING_THREAD_PREVIEW_MAX_CHARS") or "50000").strip()
+    try:
+        return max(2000, min(int(raw), 500_000))
+    except ValueError:
+        return 50000
+
+
+def format_thread_preview(messages: list[dict[str, Any]], max_chars: int | None = None) -> str:
+    if max_chars is None:
+        max_chars = default_thread_preview_max_chars()
     lines: list[str] = []
     total = 0
     for m in messages:
@@ -140,6 +156,46 @@ def gather_notion_previews(
     return out
 
 
+def gather_google_doc_previews(
+    messages: list[dict[str, Any]],
+    *,
+    max_chars_per_doc: int = 12000,
+) -> list[dict[str, Any]]:
+    """
+    Fetch Google Docs plain text for docs.google.com URLs in thread (deduped by document id).
+    Each item: {doc_id, title, preview, error?}
+    Requires service account JSON (see .env.example); each doc must be shared with that account (Viewer).
+    """
+    urls = collect_urls_from_messages(messages)
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for u in urls:
+        did = google_doc_id_from_url(u)
+        if not did or did in seen:
+            continue
+        seen.add(did)
+        if not google_credentials_configured():
+            out.append(
+                {
+                    "doc_id": did,
+                    "title": "",
+                    "preview": "",
+                    "error": "Google credentials not set",
+                }
+            )
+            continue
+        info = fetch_google_doc(did, max_chars=max_chars_per_doc)
+        out.append(
+            {
+                "doc_id": did,
+                "title": (info.get("title") or "").strip(),
+                "preview": (info.get("text") or "").strip(),
+                "error": info.get("error"),
+            }
+        )
+    return out
+
+
 def notion_excerpt_for_llm(
     messages: list[dict[str, Any]],
     *,
@@ -165,21 +221,62 @@ def notion_excerpt_for_llm(
     return "\n".join(parts).strip()
 
 
+def google_docs_excerpt_for_llm(
+    messages: list[dict[str, Any]],
+    *,
+    previews: list[dict[str, Any]] | None = None,
+    max_chars: int = 6000,
+) -> str:
+    """Plain text from Google Docs for Anthropic. Pass `previews` to avoid a second API fetch."""
+    rows = previews if previews is not None else gather_google_doc_previews(messages)
+    parts: list[str] = []
+    total = 0
+    for row in rows:
+        if row.get("error"):
+            block = f"[Google Doc {row['doc_id'][:8]}… error: {row['error']}]\n"
+        else:
+            title = row.get("title") or "(untitled)"
+            prv = (row.get("preview") or "")[:3000]
+            block = f"## Google Doc: {title}\n{prv}\n"
+        if total + len(block) > max_chars:
+            parts.append("… (google doc excerpt truncated)")
+            break
+        parts.append(block)
+        total += len(block)
+    return "\n".join(parts).strip()
+
+
+def phase_b_excerpt_for_llm(
+    messages: list[dict[str, Any]],
+    *,
+    notion_previews: list[dict[str, Any]] | None = None,
+    google_previews: list[dict[str, Any]] | None = None,
+    max_chars: int = 8000,
+) -> str:
+    """Notion + Google Docs text for Phase B extraction (split budget when both present)."""
+    half = max(2000, max_chars // 2)
+    n = notion_excerpt_for_llm(messages, previews=notion_previews, max_chars=half)
+    g = google_docs_excerpt_for_llm(messages, previews=google_previews, max_chars=half)
+    return "\n\n".join(x for x in (n, g) if x).strip()
+
+
 def build_context_minimal_line(messages: list[dict[str, Any]]) -> str:
     """One line for minimal Slack mode — no full thread dump."""
     n = len(messages)
-    return f"_Контекст: {n} сообщ. в треде._"
+    return f"_Context: {n} message(s) in thread._"
 
 
 def build_context_reply(
     messages: list[dict[str, Any]],
     *,
     previews: list[dict[str, Any]] | None = None,
+    google_previews: list[dict[str, Any]] | None = None,
 ) -> str:
-    """Full mrkdwn reply for Phase A (context only). Pass `previews` to reuse a single Notion fetch."""
+    """Full mrkdwn reply for Phase A (context only). Pass `previews` / `google_previews` to reuse fetches."""
     preview = format_thread_preview(messages)
     urls = collect_urls_from_messages(messages)
     rows = previews if previews is not None else gather_notion_previews(messages)
+    g_rows = google_previews if google_previews is not None else gather_google_doc_previews(messages)
 
     lines: list[str] = [
         "*Staffing Agent — context (phase A)*",
@@ -217,6 +314,33 @@ def build_context_reply(
     if notion_sections:
         lines.append("*Notion previews*")
         lines.extend(notion_sections)
+
+    google_sections: list[str] = []
+    g_cred_missing_shown = False
+    for row in g_rows:
+        did = row["doc_id"]
+        if row.get("error") == "Google credentials not set":
+            if not g_cred_missing_shown:
+                google_sections.append(
+                    "_Google Docs:_ links found, but `STAFFING_GOOGLE_APPLICATION_CREDENTIALS` or "
+                    "`GOOGLE_APPLICATION_CREDENTIALS` is not set — add a service account JSON path (see `.env.example`)."
+                )
+                g_cred_missing_shown = True
+            continue
+        if row.get("error"):
+            google_sections.append(f"• Google Doc `{did[:8]}…`: _{row['error']}_")
+        else:
+            title = row.get("title") or "(untitled)"
+            prv = (row.get("preview") or "").strip()
+            if prv:
+                clip = prv[:800] + ("…" if len(prv) > 800 else "")
+                google_sections.append(f"• *{title}* _(Google Doc)_\n```{clip}```")
+            else:
+                google_sections.append(f"• *{title}* _(Google Doc, empty body)_")
+
+    if google_sections:
+        lines.append("*Google Docs previews*")
+        lines.extend(google_sections)
 
     lines.append("*Thread*")
     lines.append("```")

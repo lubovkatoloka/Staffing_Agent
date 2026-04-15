@@ -1,0 +1,10 @@
+# Team capacity — оценка параллельных проектов по Decision Logic v1.0 + Node 2 (упрощённые допущения).
+# Не заменяет ручной capacity review; числа — нижние ориентиры по FREE и ролям из Occupation.
+
+spec_note: |
+  Tier 1 (Node 2): SO = DPM или WFM; WFM + QM в scoping/building.
+  Tier 2: SO = SoE или DPM (SO status в таблице).
+  Tier 3: SSoE или DPM + SoE + WFM; доменный матч — в этой оценке не моделируем, только «есть ли голова».
+  Tier 4: полная команда + Commercial — Commercial в SQL часто нет; оценка консервативная.
+
+# Формулы в коде: tier1_scoping = min(dpm_free, wfm_free); tier2 = so_eligible_free; tier3 ≈ min(soe_free, wfm_free); tier4 ≈ min(...) по ключевым ролям.

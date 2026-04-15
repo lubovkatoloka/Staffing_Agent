@@ -75,6 +75,39 @@ def complete_text(
     return "".join(parts).strip()
 
 
+def _parse_json_object(raw: str) -> dict[str, Any]:
+    """Parse model output: strict JSON, or first balanced `{...}` object (handles extra prose / truncation)."""
+    text = raw.strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[-1]
+        if text.endswith("```"):
+            text = text[: text.rfind("```")].strip()
+        elif "```" in text:
+            text = text[: text.rfind("```")].strip()
+    try:
+        out = json.loads(text)
+        if isinstance(out, dict):
+            return out
+    except json.JSONDecodeError:
+        pass
+    start = text.find("{")
+    if start == -1:
+        raise ValueError("No JSON object in model output")
+    decoder = json.JSONDecoder()
+    try:
+        obj, _end = decoder.raw_decode(text[start:])
+        if isinstance(obj, dict):
+            return obj
+    except json.JSONDecodeError:
+        pass
+    end = text.rfind("}")
+    if end > start:
+        out = json.loads(text[start : end + 1])
+        if isinstance(out, dict):
+            return out
+    raise ValueError("Could not parse JSON object from model output")
+
+
 def complete_json(
     *,
     system: str,
@@ -88,12 +121,7 @@ def complete_json(
         max_tokens=max_tokens,
         temperature=0.1,
     )
-    raw = raw.strip()
-    if raw.startswith("```"):
-        raw = raw.split("\n", 1)[-1]
-        if raw.endswith("```"):
-            raw = raw[: raw.rfind("```")].strip()
-    return json.loads(raw)
+    return _parse_json_object(raw)
 
 
 def check_anthropic_connection() -> None:

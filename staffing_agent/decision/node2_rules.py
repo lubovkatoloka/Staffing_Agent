@@ -20,23 +20,27 @@ def node2_slack_markdown(tier: Optional[int], project_type_tags: list[str]) -> s
 
     rows: dict[int, str] = {
         1: (
-            "*Required roles:* SO = DPM or WFM; WFM + QM (scoping & building).\n"
+            "*Ownership (Tier 1 · S):* SO = DPM or WFM; + WFM + QM (scoping & building). "
+            "*Target FTE:* ~1.3 per project.\n"
             "*Source pool:* people from *similar completed Tier 1* projects.\n"
             "*Domain match:* not required — any available SO."
         ),
         2: (
-            "*Required roles:* SO = SoE or DPM (if SeSe applicable per your rules).\n"
-            "*Source pool:* any available SoE / DPM with SO status "
-            "(SeSe path: SO only — no WFM/QM needed).\n"
+            "*Ownership (Tier 2 · S):* SO = SoE or DPM; + WFM + QM when SeSe is *not* applicable "
+            "(SeSe path: SO = SoE/DPM only — leaner team).\n"
+            "*Target FTE:* ~1.3 without SeSe; <1 with SeSe.\n"
+            "*Source pool:* any available SoE / DPM with SO status (+ WFM/QM when applicable).\n"
             "*Domain match:* not required — any available SO."
         ),
         3: (
-            "*Required roles:* SO = SSoE or DPM; SoE + WFM.\n"
+            "*Ownership (Tier 3 · M):* SO = SSoE or DPM; + SoE + WFM (WFC).\n"
+            "*Target FTE:* ~1.7 per project.\n"
             "*Source pool:* people from *similar completed projects* with matching type tags.\n"
             "*Domain match:* **required** — filter by tag overlap / semantic match (Phase 2 in product roadmap)."
         ),
         4: (
-            "*Required roles:* SO = DPM; SSoE + SoE + WFM + Commercial.\n"
+            "*Ownership (Tier 4 · L):* SO = SSoE or DPM; + SoE + WFM + SE (strategic / high-risk / custom infra).\n"
+            "*Target FTE:* ~3 per project. Commercial engagement as needed for deal shape.\n"
             "*Source pool:* people from *similar completed projects* with matching type tags.\n"
             "*Domain match:* **required**."
         ),

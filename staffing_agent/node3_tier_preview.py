@@ -10,15 +10,16 @@ from __future__ import annotations
 from typing import Optional
 
 # Normalized project_role values from occupation SQL (employees + staffing join).
+# Aligned with Tier / Ownership model (Decision Logic): SO pool + supporting roles per tier.
 _PREVIEW_BY_TIER: dict[int, frozenset[str]] = {
-    # SO = DPM or WFM; + WFM + QM
+    # Tier 1 · S — client platform / raw supply: SO = DPM or WFM; + WFM + QM
     1: frozenset({"dpm", "wfm", "qm"}),
-    # SO = SoE or DPM
-    2: frozenset({"soe", "dpm"}),
-    # SO = SSoE or DPM; SoE + WFM (SSoE rows use project_role soe)
+    # Tier 2 · S — standard pipeline: SO = SoE or DPM; + WFM + QM when not SeSe path (show full team roles)
+    2: frozenset({"soe", "dpm", "wfm", "qm"}),
+    # Tier 3 · M — multi-stage / domain: SO = SSoE or DPM; + SoE + WFM (WFC)
     3: frozenset({"dpm", "soe", "wfm"}),
-    # SO (DPM) + SSoE + SoE + WFM + Commercial — Commercial rarely in SQL; show pipeline roles
-    4: frozenset({"dpm", "soe", "wfm"}),
+    # Tier 4 · L — strategic: SO = SSoE or DPM; + SoE + WFM + SE (use `project_role` = se in SQL if present)
+    4: frozenset({"dpm", "soe", "wfm", "se"}),
 }
 
 
