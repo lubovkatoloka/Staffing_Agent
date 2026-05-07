@@ -1,15 +1,15 @@
 """
-Group occupation rows into SO / SOE·SSoE / DPM / WFM buckets for Slack (Decision Logic–aligned labels).
-
-Uses `project_role` from occupation SQL (dpm, soe, wfm, …) and `user_role` when present.
+Group Capacity snapshot rows into SO / SOE·SSoE / DPM / WFM buckets for Slack (Capacity v2).
 """
 
 from __future__ import annotations
 
 from typing import Any, Mapping, Optional
 
-from staffing_agent.decision import classify_availability
-from staffing_agent.node3_row_utils import name_value, occupation_value, project_role_norm
+from staffing_agent.capacity_runtime import format_capacity_projects_line
+from staffing_agent.decision import CapacityVerdict
+from staffing_agent.decision.enums import Band
+from staffing_agent.node3_row_utils import name_value, project_role_norm
 
 
 def _get_ci(row: dict[str, Any], *candidates: str) -> Any:
@@ -25,42 +25,38 @@ def _user_role_norm(row: dict[str, Any]) -> str:
     return (str(v) if v is not None else "").strip().lower()
 
 
-def _row_label(
-    row: dict[str, Any],
-    *,
-    decision_cfg: Mapping[str, Any],
-) -> str:
-    occ = occupation_value(row)
-    if occ is None:
-        return "?"
-    t = max(0.0, min(1.0, float(occ)))
-    apc = 0 if t == 0.0 else 1
-    av = classify_availability(t, active_project_count=apc, decision_cfg=decision_cfg)
-    return av.label.value
+def _verdict(row: dict[str, Any]) -> CapacityVerdict:
+    v = row.get("_capacity_verdict")
+    if not isinstance(v, CapacityVerdict):
+        raise ValueError("Row missing `_capacity_verdict` — prepare snapshot rows first.")
+    return v
 
 
-def _line_for_row(
-    row: dict[str, Any],
-    *,
-    decision_cfg: Mapping[str, Any],
-) -> str:
+def _row_label(row: dict[str, Any]) -> str:
+    return _verdict(row).band.value
+
+
+def _line_for_row(row: dict[str, Any]) -> str:
     name = name_value(row)
-    label = _row_label(row, decision_cfg=decision_cfg)
-    occ = occupation_value(row)
-    pct = f"{occ * 100:.0f}%" if occ is not None else "n/a"
-    return f"• {name} — load {pct} → `{label}`"
+    verdict = _verdict(row)
+    label = verdict.band.value
+    cu = verdict.capacity_used
+    soft = ""
+    if verdict.is_soft and verdict.soft_reasons:
+        soft = " `[SOFT: " + ", ".join(s.value for s in verdict.soft_reasons) + "]`"
+    projs = format_capacity_projects_line(tuple(row.get("_capacity_rows") or ()))
+    return f"• {name} — capacity *{cu:.2f}* → `{label}`{soft} — _{projs}_"
 
 
 def _take_bucket(
     rows: list[dict[str, Any]],
     pred,
     *,
-    decision_cfg: Mapping[str, Any],
     max_n: int,
 ) -> list[dict[str, Any]]:
     cand = [r for r in rows if pred(r)]
-    cand.sort(key=lambda r: occupation_value(r) if occupation_value(r) is not None else 1.0)
-    non_busy = [r for r in cand if _row_label(r, decision_cfg=decision_cfg) != "BUSY"]
+    cand.sort(key=lambda r: float(_verdict(r).capacity_used))
+    non_busy = [r for r in cand if _verdict(r).band != Band.AT_CAP]
     use = non_busy if non_busy else cand
     return use[:max_n]
 
@@ -77,6 +73,7 @@ def format_role_bucket_section(
 
     For Tier 2 (Node 2), only SO-relevant buckets are shown — WFM is omitted (not in minimum team).
     """
+    _ = decision_cfg
     if not rows:
         return ""
 
@@ -103,43 +100,48 @@ def format_role_bucket_section(
         ]
     else:
         lines = [
-            "*By role — who to look at first (from Node 3 load)*",
-            "_SO in spec = SoE or DPM; below — buckets by `project_role` from SQL._",
+            "*By role — who to look at first (from Capacity snapshot)*",
+            "_SO in spec = SoE or DPM; buckets use `project_role` / `role_group` from SQL._",
         ]
 
-    so_pool = _take_bucket(rows, is_so_pool, decision_cfg=decision_cfg, max_n=max_per_bucket)
-    lines.append("*SO (SoE + DPM pool, freest first):*")
+    so_pool = _take_bucket(rows, is_so_pool, max_n=max_per_bucket)
+    lines.append("*SO (SoE + DPM pool, lowest capacity first):*")
     if so_pool:
         for r in so_pool:
-            lines.append(_line_for_row(r, decision_cfg=decision_cfg))
+            lines.append(_line_for_row(r))
     else:
         lines.append("_no SoE/DPM in sample_")
 
-    soe = _take_bucket(rows, is_soe, decision_cfg=decision_cfg, max_n=max_per_bucket)
+    soe = _take_bucket(rows, is_soe, max_n=max_per_bucket)
     lines.append("*SOE / SSoE:*")
     if soe:
         for r in soe:
-            lines.append(_line_for_row(r, decision_cfg=decision_cfg))
+            lines.append(_line_for_row(r))
     else:
         lines.append("_none_")
 
-    dpm = _take_bucket(rows, is_dpm, decision_cfg=decision_cfg, max_n=max_per_bucket)
+    dpm = _take_bucket(rows, is_dpm, max_n=max_per_bucket)
     lines.append("*DPM:*")
     if dpm:
         for r in dpm:
-            lines.append(_line_for_row(r, decision_cfg=decision_cfg))
+            lines.append(_line_for_row(r))
     else:
         lines.append("_none_")
 
     if not hide_wfm:
-        wfm = _take_bucket(rows, is_wfm, decision_cfg=decision_cfg, max_n=max_per_bucket)
+        wfm = _take_bucket(rows, is_wfm, max_n=max_per_bucket)
         lines.append("*WFM / WFC:*")
         if wfm:
             for r in wfm:
-                lines.append(_line_for_row(r, decision_cfg=decision_cfg))
+                lines.append(_line_for_row(r))
         else:
             lines.append("_none_")
 
+    fb = float((decision_cfg.get("availability_bands") or {}).get("free_below", 1.0))
+    pb = float((decision_cfg.get("availability_bands") or {}).get("partial_below", 2.0))
+    lines.append(
+        f"_Bands (capacity units): FREE below {fb:.2f}, PARTIAL below {pb:.2f}, else AT_CAP (`config/decision_logic.yaml`)._"
+    )
     return "\n".join(lines)
 
 
@@ -169,5 +171,6 @@ def format_role_bucket_fallback(reason: str, *, tier: Optional[int] = None) -> s
         "*DPM:* _—_\n"
         f"{wfm_line}"
         f"{wfm_note}"
-        "_After a successful `sql/occupation.sql`, people appear here by `project_role`._"
+        "_After a successful `sql/capacity.sql`, people appear here by staffing role._"
     )
+

@@ -11,13 +11,92 @@ from typing import Any
 
 from dotenv import load_dotenv
 from staffing_agent.config_loader import load_decision_config, load_tier_classification_prompt
-from staffing_agent.intent import is_likely_deal_notification_thread
+from staffing_agent.intent import (
+    is_likely_deal_notification_thread,
+    thread_has_availability_capacity_ping,
+)
 from staffing_agent.models.request_spec import RequestSpec
 
 _ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(_ROOT / ".env", override=True)
 
 logger = logging.getLogger(__name__)
+
+_EXPLICIT_TIER_IN_TEXT_RE = re.compile(r"(?i)\btier\s*([1-4])\b")
+_STAFFING_CONTEXT_RE = re.compile(
+    r"(?i)\b(need|staffing|staff|hire|soe|ssoe|sse|dpm|wfm|qm|owner|headcount|resourcing|"
+    r"looking\s+for|who\s+can|join\s+us|open\s+role)\b"
+)
+
+
+def explicit_tier_in_thread(thread_text: str) -> int | None:
+    """First explicit ``tier 1`` … ``tier 4`` (case-insensitive) in the thread."""
+    m = _EXPLICIT_TIER_IN_TEXT_RE.search(thread_text or "")
+    return int(m.group(1)) if m else None
+
+
+def _thread_suggests_staffing_intent(thread_text: str) -> bool:
+    if _STAFFING_CONTEXT_RE.search(thread_text or ""):
+        return True
+    return thread_has_availability_capacity_ping(thread_text or "")
+
+
+def _coerce_tier_value(val: Any) -> int | None:
+    """Map LLM junk (``Tier 3`` string, float, out-of-range int) to 1..4 or None."""
+    if val is None:
+        return None
+    if isinstance(val, bool):
+        return None
+    if isinstance(val, int):
+        return val if 1 <= val <= 4 else None
+    if isinstance(val, float):
+        if val != int(val):
+            return None
+        n = int(val)
+        return n if 1 <= n <= 4 else None
+    if isinstance(val, str):
+        s = val.strip()
+        if s.isdigit():
+            n = int(s)
+            return n if 1 <= n <= 4 else None
+        m = re.search(r"(?i)\btier\s*([1-4])\b", s)
+        if m:
+            return int(m.group(1))
+    return None
+
+
+def _extraction_rescue_spec(thread_text: str, exc: BaseException) -> RequestSpec | None:
+    """
+    When Phase B throws (API/JSON/validation), recover a usable spec if the user already typed
+    ``tier N`` in a staffing-shaped message — avoids “Extraction failed” + empty tier.
+    """
+    tier_g = explicit_tier_in_thread(thread_text)
+    if tier_g is None:
+        return None
+    if not _thread_suggests_staffing_intent(thread_text):
+        return None
+    brief = _thread_brief_for_fallback(thread_text)
+    cc = "M" if tier_g >= 3 else "S"
+    tags: list[str] = []
+    if re.search(r"(?i)\bcoding\b", thread_text or ""):
+        tags.append("Coding")
+    err = f"Phase B error ({type(exc).__name__}): {str(exc)[:280]}"
+    return RequestSpec(
+        thread_kind="staffing_request",
+        tier=tier_g,
+        complexity_class=cc,
+        tier_rationale=(
+            f"Heuristic rescue: explicit Tier {tier_g} in thread after Phase B failure; "
+            "confirm when extraction is healthy."
+        ),
+        project_type_tags=tags,
+        summary=brief,
+        confidence=0.55,
+        notes=(
+            f"{err}. Tier and complexity were recovered from thread text (not from LLM JSON). "
+            "Check Anthropic/LiteLLM logs if this happens often."
+        )[:2000],
+    )
 
 
 def mock_llm_reason() -> str:
@@ -78,20 +157,33 @@ def _normalize_llm_spec_dict(data: dict[str, Any]) -> dict[str, Any]:
         "unclear",
     ):
         out["thread_kind"] = None
-    tr = out.get("tier")
-    if isinstance(tr, str) and tr.strip().isdigit():
-        out["tier"] = int(tr.strip())
-    elif isinstance(tr, float) and tr == int(tr) and 1 <= int(tr) <= 4:
-        out["tier"] = int(tr)
+    out["tier"] = _coerce_tier_value(out.get("tier"))
     conf = out.get("confidence")
     if isinstance(conf, str):
         try:
-            out["confidence"] = float(conf)
+            conf = float(conf)
         except ValueError:
-            out["confidence"] = 0.0
+            conf = 0.0
+    if isinstance(conf, (int, float)):
+        out["confidence"] = max(0.0, min(1.0, float(conf)))
     cc = out.get("complexity_class")
-    if cc is not None and cc not in ("S", "M", "L"):
+    if isinstance(cc, str):
+        cc = cc.strip().upper()[:1]
+        if cc in ("S", "M", "L"):
+            out["complexity_class"] = cc
+        else:
+            out["complexity_class"] = None
+    elif cc is not None and cc not in ("S", "M", "L"):
         out["complexity_class"] = None
+    tags = out.get("project_type_tags")
+    if tags is None:
+        pass
+    elif isinstance(tags, str):
+        out["project_type_tags"] = [tags.strip()] if tags.strip() else []
+    elif not isinstance(tags, list):
+        out["project_type_tags"] = []
+    else:
+        out["project_type_tags"] = [str(x).strip() for x in tags if str(x).strip()]
     return out
 
 
@@ -108,6 +200,40 @@ def _deal_feed_fallback_spec(thread_text: str, exc: BaseException) -> RequestSpe
         summary=brief,
         confidence=0.35,
         notes=err_note[:2000],
+    )
+
+
+def apply_deal_feed_availability_tier_hint(thread_text: str, spec: RequestSpec) -> RequestSpec:
+    """
+    When Phase B leaves ``tier`` null but the thread is a deal/CRM feed **and** includes an availability
+    ping (``who_is_available``, “who is available”, “team capacity”, …), set a **hypothesis** Tier 3 · M
+    so Node 2–3 can run. Disable with ``STAFFING_DEAL_AVAILABILITY_TIER_HINT=0``.
+    """
+    if spec.tier is not None:
+        return spec
+    if (os.environ.get("STAFFING_DEAL_AVAILABILITY_TIER_HINT") or "1").strip() == "0":
+        return spec
+    if not is_likely_deal_notification_thread(thread_text):
+        return spec
+    if not thread_has_availability_capacity_ping(thread_text):
+        return spec
+    rationale = (spec.tier_rationale or "").strip()
+    tag = (
+        "[Deal feed + availability ping: hypothesis Tier 3 · M so Node 2–3 can run; "
+        "confirm or adjust with Delivery.]"
+    )
+    rationale = f"{rationale}\n{tag}".strip() if rationale else tag
+    notes = (spec.notes or "").strip()
+    nextra = "Auto-tier hint: CRM/deal thread + availability / who_is_available wording."
+    notes = f"{notes}\n{nextra}".strip() if notes else nextra
+    return spec.model_copy(
+        update={
+            "tier": 3,
+            "complexity_class": "M",
+            "tier_rationale": rationale[:8000],
+            "notes": notes[:2000],
+            "confidence": max(float(spec.confidence or 0), 0.42),
+        }
     )
 
 
@@ -192,10 +318,15 @@ def extract_request_spec(thread_text: str, notion_excerpt: str = "") -> tuple[Re
         f"{out_req}\n\n"
         f"{boundary_block}"
         "Read the Slack thread and optional Notion excerpts. "
-        "If the thread is pasted proposal copy, FAQ, or 'better phrasing' without a staffing ask, set tier to null — do not assign Tier 1–4 from product description alone. "
+        "If the thread is pasted proposal copy, FAQ, or 'better phrasing' without any staffing or availability signal, "
+        "set tier to null — do not assign Tier 1–4 from product description alone. "
+        "**Exception:** if the thread combines a CRM/Attio/new-deal context with @who_is_available or "
+        "'who is available' / 'team capacity' / Russian equivalents, you MUST assign hypothesis tier 1–4 and "
+        "complexity_class — that is a Delivery capacity question on a shaped deal, not FYI-only. "
         "When tier is set and unclear, still extract product signals (evals, languages, call, etc.); "
         "Node 3 lists people by role from Databricks when SQL is configured. "
-        "Extract project type tags only when they help staffing (short labels: e.g. Evals, TTS, multilingual); omit or minimize tags when tier is null. "
+        "Extract project type tags when they help staffing (short labels: e.g. Evals, TTS, multilingual); "
+        "when tier is null, omit or minimize tags. "
         "Output a single JSON object matching this JSON Schema (no markdown, no commentary):\n"
         f"{json.dumps(schema, ensure_ascii=False)}"
     )
@@ -209,12 +340,20 @@ def extract_request_spec(thread_text: str, notion_excerpt: str = "") -> tuple[Re
         data = complete_json(system=system, user=user, max_tokens=4096)
         data = _normalize_llm_spec_dict(data)
         spec = RequestSpec.model_validate(data)
+        spec = apply_deal_feed_availability_tier_hint(thread_text, spec)
         return apply_forced_tier(spec), "anthropic"
     except Exception as e:
         logger.exception("extraction failed: %s", e)
         if is_likely_deal_notification_thread(thread_text):
             logger.warning("using deal-feed RequestSpec fallback after Phase B failure")
-            return apply_forced_tier(_deal_feed_fallback_spec(thread_text, e)), "anthropic_fallback"
+            fb = _deal_feed_fallback_spec(thread_text, e)
+            fb = apply_deal_feed_availability_tier_hint(thread_text, fb)
+            return apply_forced_tier(fb), "anthropic_fallback"
+        rescue = _extraction_rescue_spec(thread_text, e)
+        if rescue is not None:
+            logger.warning("using staffing rescue RequestSpec after Phase B failure (explicit tier in thread)")
+            rescue = apply_deal_feed_availability_tier_hint(thread_text, rescue)
+            return apply_forced_tier(rescue), "anthropic_rescue"
         return (
             apply_forced_tier(
                 RequestSpec(

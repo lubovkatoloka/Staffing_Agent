@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 from staffing_agent.anthropic_llm import check_anthropic_connection
-from staffing_agent.databricks_cli import check_databricks_sql
+from staffing_agent.databricks_cli import check_databricks_sql, databricks_profile
 from staffing_agent.paste_run import build_reply_from_paste, post_reply_to_slack
 from staffing_agent.slack_app import check_slack_connection, run_socket_mode
 
@@ -66,6 +66,23 @@ def main() -> None:
         except Exception as e:
             print(f"CHECK FAILED: {e}", file=sys.stderr, flush=True)
             raise SystemExit(1) from e
+        if databricks_profile():
+            try:
+                check_databricks_sql()
+            except Exception as e:
+                print(
+                    f"CHECK_DBX FAILED: {e}\n"
+                    "Fix: databricks auth login --profile "
+                    f"{databricks_profile()}  (then re-run --check before starting the bot)",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                raise SystemExit(1) from e
+        else:
+            print(
+                "Databricks: skipped (DATABRICKS_PROFILE not set in .env — capacity SQL disabled).",
+                flush=True,
+            )
         raise SystemExit(0)
     if args.check_llm:
         try:

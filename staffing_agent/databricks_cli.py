@@ -75,9 +75,14 @@ def run_sql_query(
 
 
 def check_databricks_sql() -> None:
-    """Print result of SELECT 1 for `python -m staffing_agent --check-dbx`."""
+    """Print result of SELECT 1 for `python -m staffing_agent --check-dbx` (same flags as Node 3)."""
     print("Databricks SQL smoke (SELECT 1)…", flush=True)
-    ok, msg = run_sql_query("SELECT 1 AS ok")
+    ok, msg = run_sql_query(
+        "SELECT 1 AS ok",
+        extra_args=["--output", "json"],
+    )
+    if not ok:
+        ok, msg = run_sql_query("SELECT 1 AS ok")
     if not ok:
         raise RuntimeError(msg)
     print(textwrap.shorten(f"OK: {msg}", width=800, placeholder="…"), flush=True)

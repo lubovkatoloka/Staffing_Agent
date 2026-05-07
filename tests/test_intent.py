@@ -4,7 +4,9 @@ from staffing_agent.intent import (
     is_bare_slack_capacity_mention_trigger,
     is_likely_deal_notification_thread,
     is_team_capacity_query,
+    single_role_focus_from_thread,
     slack_trigger_visible_text,
+    thread_has_availability_capacity_ping,
 )
 
 
@@ -12,6 +14,25 @@ def test_team_capacity_phrases() -> None:
     assert is_team_capacity_query("Team capacity @who_is_available")
     assert is_team_capacity_query("кто свободен на неделе")
     assert is_team_capacity_query("who is available for a call")
+
+
+def test_single_role_focus_need_soe_tier3() -> None:
+    assert (
+        single_role_focus_from_thread("need 1 SOE tier 3 or tier 3 experience, coding") == "soe"
+    )
+    assert single_role_focus_from_thread("Looking for a DPM for next sprint") == "dpm"
+
+
+def test_single_role_focus_none_when_team_capacity() -> None:
+    assert single_role_focus_from_thread("Team capacity @who_is_available") is None
+
+
+def test_thread_has_availability_capacity_ping() -> None:
+    """Underscore bot handle normalizes to 'who is available' for tier-hint pairing."""
+    assert thread_has_availability_capacity_ping("deals-new\n<@U123>: who_is_available")
+    assert thread_has_availability_capacity_ping("Please check who is available for Shopify")
+    assert thread_has_availability_capacity_ping("Team capacity snapshot for Q2")
+    assert not thread_has_availability_capacity_ping("APP:attio: New deal\nDeal value: 100\nno ping here")
 
 
 def test_deal_feed_heuristic() -> None:

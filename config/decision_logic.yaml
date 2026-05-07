@@ -1,35 +1,73 @@
-# Staffing Agent — Decision Logic v1.0 (encoded for tests & runtime).
-# Source of truth for product nuance remains Notion; keep versions in sync.
-# https://www.notion.so/toloka-ai/Staffing-Agent-Decision-Logic-v1-0-32749d0688568183af3bf80ff6aedfd4
+spec_version: "2.0"
+notion_spec_url: "https://www.notion.so/34b49d06885681468dd6d79d2e16d332"
 
-spec_version: "1.0"
-notion_spec_url: "https://www.notion.so/toloka-ai/Staffing-Agent-Decision-Logic-v1-0-32749d0688568183af3bf80ff6aedfd4"
+cap_units: 2.0
 
-# Total occupation = project_occupation + pto_coefficient (pto_days_this_week / 5), all 0..1
-occupation:
-  free_below: 0.5       # < 50% → FREE (unless UNVERIFIED / SOFT / PTO rules apply)
-  partial_below: 0.8    # 50% ≤ occ < 80% → PARTIAL; ≥ 80% → BUSY
+tier_weights:
+  "Tier 1": 1.0
+  "Tier 2": 0.67
+  "Tier 3": 1.0
+  "Tier 4": 2.0
 
-# "SOFT" row: discovery / blocked_client / close_out — discuss release with PM
-soft_assignment:
-  stages:
-    - discovery
-    - close_out_retrospective
-  statuses:
-    - BLOCKED_CLIENT
+stage_status_matrix:
+  building:
+    ON_TRACK: 1.0
+    AT_RISK: 2.0
+    BEHIND: 2.0
+    BLOCKED_CLIENT: 1.0
+    BLOCKED_INTERNAL: 1.0
+  stabilisation_delivery:
+    ON_TRACK: 1.0
+    AT_RISK: 2.0
+    BEHIND: 2.0
+    BLOCKED_CLIENT: 1.0
+    BLOCKED_INTERNAL: 1.0
+  close_out_retrospective:
+    ON_TRACK: 0.0
+    AT_RISK: 2.0
+    BEHIND: 2.0
+    BLOCKED_CLIENT: 1.0
+    BLOCKED_INTERNAL: 1.0
+  discovery:
+    ON_TRACK: 0.0
+    AT_RISK: 0.0
+    BEHIND: 0.0
+    BLOCKED_CLIENT: 0.0
+    BLOCKED_INTERNAL: 0.0
+  scoping_solution_design:
+    ON_TRACK: 0.0
+    AT_RISK: 0.0
+    BEHIND: 0.0
+    BLOCKED_CLIENT: 0.0
+    BLOCKED_INTERNAL: 0.0
 
-# Zero occupation skepticism: 0% and 0 active projects → UNVERIFIED (not FREE)
-unverified:
-  when_occupation_zero: true
-  when_active_projects_zero: true
+availability_bands:
+  free_below: 1.0       # capacity_used < 1.0  -> FREE
+  partial_below: 2.0    # 1.0 <= capacity_used < 2.0 -> PARTIAL ; >= 2.0 -> AT_CAP
 
-# Full-week PTO (5/5 working days): treat as PTO — excluded from staffing cycle (caller may skip)
+hard_rules:
+  max_total_active_projects: 4
+
+scoping:
+  max_slots_per_person: 2
+  blocked_if_any_at_risk_or_behind: true
+
 pto:
-  full_week_days: 5
-  working_days_per_week: 5
+  hard_exclude_today: true
+  soft_warning_days_ahead: 14
 
-# Project staffing snapshot (sql/project_staffing.sql) — extra gates on top of CSV / Occupation.
-# Tuned with PM; disable or edit while the model stabilises.
+soft_signal:
+  triggers:
+    - all_scoping_or_discovery   # capacity_used == 0 AND total_projects > 0 AND every project is in scoping or discovery
+    - all_close_out_on_track     # all non-zero-load projects are close_out_retrospective with ON_TRACK
+    # ending_soon planned for follow-up task; do not implement now
+
+terminal_statuses_filter:
+  - ARCHIVED
+  - CANCELED
+  - COMPLETED
+
+# Project staffing snapshot (sql/project_staffing.sql) — extra gates on top of CSV / Capacity.
 staffing_ps_gates:
   enabled: true
   heavy_stages:
@@ -39,25 +77,17 @@ staffing_ps_gates:
     - discovery
     - scoping
   blocked_status: BLOCKED_CLIENT
-  # ≥ this many building/stabilisation orders → block (see heavy_block_tier_lt)
   min_heavy_projects_to_block: 3
-  # Tier strictly below this: 3+ heavy → excluded (stricter for Tier 1–2)
   heavy_block_tier_lt: 3
   block_three_heavy_for_tier_gte_threshold: true
-  # Any non–blocked-by-client building order → exclude (unless only-light / deadline / 3+blocked rule)
   block_any_building_non_blocked: true
   only_light_overrides_all: true
   deadline_this_week_overrides: true
   three_plus_one_blocked_scoping_only: true
 
-# Tier 3 — Node 4 team layout (SO + SoE + WFM): uses sql/project_staffing.sql snapshot when present
+# Tier 3 — Node 4 team layout: uses sql/project_staffing.sql snapshot when present
 tier3_recommendation:
-  # Do not list someone under *SO (SSoE or DPM)* if they have this many or more concurrent active orders
-  # (matched by name in role columns). Omits the SO/order gate when project_staffing is unavailable.
   exclude_so_if_active_orders_gte: 3
-  # Same for *SoE* — e.g. 3+ parallel orders → not listed in primary or alternates for that role.
   exclude_soe_if_active_orders_gte: 3
-  # Optional: same for WFM (0 = disabled)
   exclude_wfm_if_active_orders_gte: 0
-  # How many “next in rank” names to show per role after the top-3 primary shortlist
   alternate_slots_per_role: 3

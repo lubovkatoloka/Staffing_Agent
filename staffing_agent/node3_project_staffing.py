@@ -30,7 +30,7 @@ _ROLE_KEYS = (
     "other",
 )
 
-# Keep in sync with sql/project_staffing.sql (orders) and occupation.sql — hide terminal statuses.
+# Keep in sync with sql/project_staffing.sql (orders) and capacity.sql — hide terminal statuses.
 _EXCLUDED_ORDER_STATUSES = frozenset(
     {
         "archived",
@@ -201,7 +201,7 @@ def format_project_staffing_markdown(
     lines: list[str] = [
         "*Currently on projects (staffing, Databricks)*",
         "_Only orders whose status is not in (ARCHIVED, COMPLETED, CANCELED). "
-        "Name matches as substring in role fields; load in the recommendation above is from Occupation summary — different slices._",
+        "Name matches as substring in role fields; load in the recommendation above is from Capacity summary — different slices._",
     ]
     for display_name in recommended_names:
         matches = _projects_for_person(

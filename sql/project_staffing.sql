@@ -192,7 +192,7 @@ with
                 '019b9e56-c7f4-7565-860d-088423b58b95',
                 '019bb68f-0dcc-7c7c-8720-e11e4253f2b0'
             )
-            -- Только активные заказы (как в occupation.sql); иначе тянутся COMPLETED/ARCHIVED/CANCELED в списки ролей.
+            -- Только активные заказы (как в capacity.sql); иначе тянутся COMPLETED/ARCHIVED/CANCELED в списки ролей.
             and coalesce(a.status, '') not in ('ARCHIVED', 'COMPLETED', 'CANCELED')
     ),
 

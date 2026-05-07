@@ -1,8 +1,8 @@
 """
-Team capacity: who is free by role (Occupation + People & Tags) and a simplified estimate of
+Team capacity: who is free by role (Capacity v2 + People & Tags) and a simplified estimate of
 parallel projects by tier.
 
-Assumptions: one row per person in occupation output; for Tier 2 a “project” = 1 SO (SoE/DPM with SO in the table); Tier 1 scoping = one DPM + WFM pair.
+Assumes prepared rows (one per person) with `_capacity_verdict` from `prepare_rows_for_recommendation`.
 """
 
 from __future__ import annotations
@@ -10,18 +10,19 @@ from __future__ import annotations
 import sys
 from typing import Any, Mapping, Optional
 
+from staffing_agent.capacity_runtime import prepare_rows_for_recommendation
 from staffing_agent.config_loader import load_decision_config
 from staffing_agent.databricks_cli import databricks_profile
-from staffing_agent.decision import classify_availability
-from staffing_agent.decision.enums import AvailabilityLabel
-from staffing_agent.node3_row_utils import email_value, name_value, occupation_value, project_role_norm
+from staffing_agent.decision import CapacityVerdict
+from staffing_agent.decision.enums import Band
 from staffing_agent.node3_occupation import (
-    MIN_OCCUPATION_SQL_LEN,
+    MIN_CAPACITY_SQL_LEN,
     _run_query_json_first,
     _sql_executable_text,
     _try_parse_query_json,
-    occupation_sql_path,
+    capacity_sql_path,
 )
+from staffing_agent.node3_row_utils import email_value, name_value, project_role_norm
 from staffing_agent.project_staffing_gates import (
     active_project_rows_for_person,
     gate_reason_label,
@@ -40,21 +41,19 @@ def _staffing_stderr(msg: str) -> None:
     print(msg, file=sys.stderr, flush=True)
 
 
-def _classify_label(row: dict[str, Any], decision_cfg: Mapping[str, Any]) -> AvailabilityLabel:
-    occ = occupation_value(row)
-    if occ is None:
-        t = 1.0
-    else:
-        t = max(0.0, min(1.0, float(occ)))
-    apc = 0 if t == 0.0 else 1
-    return classify_availability(t, active_project_count=apc, decision_cfg=decision_cfg).label
+def _verdict(row: dict[str, Any]) -> CapacityVerdict:
+    v = row.get("_capacity_verdict")
+    if not isinstance(v, CapacityVerdict):
+        raise ValueError("expected `_capacity_verdict` on row — run prepare_rows_for_recommendation")
+    return v
 
 
-def _is_freeish(label: AvailabilityLabel) -> bool:
-    return label in (
-        AvailabilityLabel.FREE,
-        AvailabilityLabel.PARTIAL,
-    )
+def _classify_label(row: dict[str, Any]) -> Band:
+    return _verdict(row).band
+
+
+def _is_freeish(band: Band) -> bool:
+    return band in (Band.FREE, Band.PARTIAL)
 
 
 def _row_usable(
@@ -69,15 +68,14 @@ def _row_usable(
     return True
 
 
-def _fmt_person(row: dict[str, Any], label: AvailabilityLabel) -> str:
-    occ = occupation_value(row)
-    pct = f"{float(occ) * 100:.0f}%" if occ is not None else "n/a"
-    return f"{name_value(row)} — {pct} → `{label.value}`"
+def _fmt_person(row: dict[str, Any], band: Band) -> str:
+    cu = _verdict(row).capacity_used
+    return f"{name_value(row)} — capacity *{cu:.2f}* → `{band.value}`"
 
 
-def _dedupe_pairs(pairs: list[tuple[dict[str, Any], AvailabilityLabel]]) -> list[tuple[dict[str, Any], AvailabilityLabel]]:
+def _dedupe_pairs(pairs: list[tuple[dict[str, Any], Band]]) -> list[tuple[dict[str, Any], Band]]:
     seen: set[str] = set()
-    out: list[tuple[dict[str, Any], AvailabilityLabel]] = []
+    out: list[tuple[dict[str, Any], Band]] = []
     for r, lb in pairs:
         em = email_value(r) or name_value(r)
         if em in seen:
@@ -93,12 +91,6 @@ def _snapshot_gate_outcome(
     gate_tier: int,
     decision_cfg: Mapping[str, Any],
 ) -> tuple[bool, str | None]:
-    """
-    Same staffing snapshot rules as Node 4.
-
-    Returns (eligible_for_main_bullet, reason_code_or_none).
-    If eligible and reason is ``ps_scoping_discovery_only``, show footnote; if not eligible, list under *Hold*.
-    """
     if not ps_rows:
         return True, None
     sub = active_project_rows_for_person(ps_rows, name_value(row))
@@ -116,37 +108,63 @@ def _snapshot_gate_outcome(
     return False, reason
 
 
+def _bullets_primary_alternates(bullets: list[str], *, max_alternates: int = 3) -> list[str]:
+    if not bullets:
+        return []
+    out: list[str] = []
+    for i, b in enumerate(bullets):
+        raw = b.strip()
+        body = raw[1:].strip() if raw.startswith("•") else raw
+        if i == 0:
+            out.append(f"• *Primary:* {body}")
+        elif i <= max_alternates:
+            out.append(f"• *Alternate:* {body}")
+        else:
+            out.append(f"• {body}")
+    return out
+
+
 def build_team_capacity_markdown(
     rows: list[dict[str, Any]],
     *,
     decision_cfg: Optional[Mapping[str, Any]] = None,
     project_staffing_rows: Optional[list[dict[str, Any]]] = None,
+    only_role: Optional[str] = None,
 ) -> str:
     """
     Breakdown SO / SoE / DPM / WFM+WFC and a “how many projects we can take” block.
+
+    ``only_role`` — if set to ``so``/``soe``/``dpm``/``wfm``/``qm``, return only that slice (primary + alternates).
     """
     cfg = decision_cfg or load_decision_config()
     st_cfg = load_staffing_table_config()
     staffing = load_staffing_records()
     csv_loaded = bool(staffing)
 
-    usable = [r for r in rows if _row_usable(r, staffing, st_cfg)]
+    npw = 0.0
+    prepared = prepare_rows_for_recommendation(
+        rows,
+        decision_cfg=cfg,
+        new_project_weight=npw,
+        staffing=staffing,
+    )
+
+    usable = [r for r in prepared if _row_usable(r, staffing, st_cfg)]
     if not usable:
         return (
             "*Team capacity*\n"
-            "_No Occupation rows after CSV filter — check `sql/occupation.sql` and People & Tags._"
+            "_No Capacity rows after CSV filter — check `sql/capacity.sql` and People & Tags._"
         )
 
-    # SO = SoE/DPM with SO / can be SO in the table (same as recommendation)
-    so_rows: list[tuple[dict[str, Any], AvailabilityLabel]] = []
-    soe_rows: list[tuple[dict[str, Any], AvailabilityLabel]] = []
-    dpm_rows: list[tuple[dict[str, Any], AvailabilityLabel]] = []
-    wfm_rows: list[tuple[dict[str, Any], AvailabilityLabel]] = []
-    qm_rows: list[tuple[dict[str, Any], AvailabilityLabel]] = []
+    so_rows: list[tuple[dict[str, Any], Band]] = []
+    soe_rows: list[tuple[dict[str, Any], Band]] = []
+    dpm_rows: list[tuple[dict[str, Any], Band]] = []
+    wfm_rows: list[tuple[dict[str, Any], Band]] = []
+    qm_rows: list[tuple[dict[str, Any], Band]] = []
 
     for r in usable:
         pr = project_role_norm(r)
-        lb = _classify_label(r, cfg)
+        lb = _classify_label(r)
         em = email_value(r)
         rec = staffing.get(em) if em else None
         pair = (r, lb)
@@ -166,18 +184,18 @@ def build_team_capacity_markdown(
             elif rec and is_so_or_can_be_so(rec.so_status):
                 so_rows.append(pair)
 
-    def sort_key(it: tuple[dict[str, Any], AvailabilityLabel]) -> float:
-        o = occupation_value(it[0])
-        return o if o is not None else 1.0
+    def sort_key(it: tuple[dict[str, Any], Band]) -> float:
+        return float(_verdict(it[0]).capacity_used)
 
     ps = project_staffing_rows
 
     def fmt_section(
         title: str,
-        pairs: list[tuple[dict[str, Any], AvailabilityLabel]],
+        pairs: list[tuple[dict[str, Any], Band]],
         *,
         subtitle: str = "",
         gate_tier: int = 2,
+        max_alternates: int = 3,
     ) -> list[str]:
         sec: list[str] = [f"*{title}*"]
         if subtitle:
@@ -201,7 +219,7 @@ def build_team_capacity_markdown(
                     main.append(f"• {line}")
             else:
                 hold.append(f"• {line} — _{gate_reason_label(rcode)}_")
-        sec.extend(main)
+        sec.extend(_bullets_primary_alternates(main, max_alternates=max_alternates))
         if len(free_pairs) > 40:
             sec.append(f"… _{len(free_pairs) - 40} more people_")
         if hold:
@@ -211,8 +229,40 @@ def build_team_capacity_markdown(
                 sec.append(f"… _{len(hold) - 15} more on hold_")
         return sec
 
+    orl = (only_role or "").strip().lower()
+    if orl in ("so", "soe", "dpm", "wfm", "qm"):
+        role_map: dict[str, tuple[list[tuple[dict[str, Any], Band]], int, str, str]] = {
+            "so": (
+                _dedupe_pairs(so_rows),
+                2,
+                "SO (SoE/DPM with SO / can be SO in the table)",
+                "_Accountable SO pool._",
+            ),
+            "soe": (
+                _dedupe_pairs(soe_rows),
+                3,
+                "SoE / SSoE (`project_role` = soe)",
+                "_SoE-shaped staffing ask._",
+            ),
+            "dpm": (_dedupe_pairs(dpm_rows), 1, "DPM", "_DPM-only snapshot._"),
+            "wfm": (
+                _dedupe_pairs(wfm_rows),
+                1,
+                "WFM / WFC (`project_role` = wfm)",
+                "_WFM-only snapshot._",
+            ),
+            "qm": (_dedupe_pairs(qm_rows), 1, "QM (for Tier 1 scoping/building per Node 2)", "_QM-only snapshot._"),
+        }
+        pairs, gt, title, sub = role_map[orl]
+        intro = [
+            "*Staffing — role shortlist*",
+            "_Narrow ask (no project tier in Phase B). For a full team layout, add tier + scope or ask for *team capacity*._",
+            "",
+        ]
+        return "\n".join(intro + fmt_section(title, pairs, subtitle=sub, gate_tier=gt, max_alternates=5))
+
     lines: list[str] = [
-        "*Team capacity* _(Occupation + People & Tags; free = FREE or PARTIAL)_",
+        "*Team capacity* _(Capacity v2 + People & Tags; free = FREE or PARTIAL)_",
     ]
     if ps:
         lines.append(
@@ -268,13 +318,12 @@ def build_team_capacity_markdown(
         )
     )
 
-    # --- slot estimates (FREE only, conservative) — same snapshot gates per tier ---
     def free_and_snapshot_ok(
         r: dict[str, Any],
-        lb: AvailabilityLabel,
+        band: Band,
         gate_tier: int,
     ) -> bool:
-        if lb != AvailabilityLabel.FREE:
+        if band != Band.FREE:
             return False
         ok, _rcode = _snapshot_gate_outcome(ps, r, gate_tier, cfg)
         return ok
@@ -306,10 +355,10 @@ def build_team_capacity_markdown(
     )
 
     lines.append("")
-    lines.append("*How many projects we can take now (estimate, FREE only)*")
+    lines.append("*How many projects we can take now (estimate, FREE band only)*")
     lines.append(
         "_Simplification: Tier 2 = 1 SO per project; Tier 1 scoping = need DPM and WFM at the same time; "
-        "Tier 3+ — no domain match in this model; Tier 4 — no Commercial in Occupation — lower bound._"
+        "Tier 3+ — no domain match in this model; Tier 4 — no Commercial in Capacity — lower bound._"
     )
     if ps:
         lines.append(
@@ -333,15 +382,15 @@ def build_team_capacity_markdown(
     return "\n".join(lines)
 
 
-def fetch_occupation_rows(timeout_sec: int = 300) -> tuple[bool, list[dict[str, Any]], str]:
-    """Load JSON rows from Databricks occupation.sql."""
+def fetch_capacity_rows(timeout_sec: int = 300) -> tuple[bool, list[dict[str, Any]], str]:
+    """Load JSON rows from Databricks capacity.sql."""
     if not databricks_profile():
         return False, [], "no_profile"
-    path = occupation_sql_path()
+    path = capacity_sql_path()
     sql_text = _sql_executable_text(path)
-    if len(sql_text) < MIN_OCCUPATION_SQL_LEN:
+    if len(sql_text) < MIN_CAPACITY_SQL_LEN:
         return False, [], "no_sql"
-    _staffing_stderr("[staffing] Team capacity: running sql/occupation.sql …")
+    _staffing_stderr("[staffing] Team capacity: running sql/capacity.sql …")
     ok, out = _run_query_json_first(sql_text, timeout_sec=timeout_sec)
     if not ok:
         return False, [], out[:2000]
@@ -349,22 +398,34 @@ def fetch_occupation_rows(timeout_sec: int = 300) -> tuple[bool, list[dict[str, 
     return True, rows, ""
 
 
-def build_team_capacity_slack_reply(messages: list[dict[str, Any]]) -> str:
-    """Full Slack message for team-capacity intent."""
+def build_live_capacity_markdown(
+    *,
+    only_role: Optional[str] = None,
+    timeout_sec: int = 300,
+) -> str:
+    """Fetch Capacity + optional project_staffing, return capacity or single-role markdown."""
     from staffing_agent.node3_project_staffing import fetch_project_staffing_rows
 
-    ok, rows, err = fetch_occupation_rows()
-    header = ""
+    ok, rows, err = fetch_capacity_rows(timeout_sec=timeout_sec)
     if not ok:
         if err == "no_profile":
-            body = "*Team capacity*\n_Set `DATABRICKS_PROFILE` and place the query in `sql/occupation.sql`._"
-        elif err == "no_sql":
-            body = "*Team capacity*\n_`sql/occupation.sql` is empty or too short._"
-        else:
-            body = f"*Team capacity*\n_Occupation query failed:_\n```{err[:1200]}```"
-        return header + body
+            return "*Team capacity*\n_Set `DATABRICKS_PROFILE` and place the query in `sql/capacity.sql`._"
+        if err == "no_sql":
+            return "*Team capacity*\n_`sql/capacity.sql` is empty or too short._"
+        return f"*Team capacity*\n_Capacity query failed:_\n```{err[:1200]}```"
 
     cfg = load_decision_config()
-    ps_rows = fetch_project_staffing_rows(timeout_sec=180)
-    body = build_team_capacity_markdown(rows, decision_cfg=cfg, project_staffing_rows=ps_rows or None)
-    return header + body
+    ps_rows = fetch_project_staffing_rows(timeout_sec=min(timeout_sec, 180))
+    return build_team_capacity_markdown(
+        rows,
+        decision_cfg=cfg,
+        project_staffing_rows=ps_rows or None,
+        only_role=only_role,
+    )
+
+
+def build_team_capacity_slack_reply(messages: list[dict[str, Any]], *, only_role: Optional[str] = None) -> str:
+    """Full Slack message for team-capacity intent (``messages`` reserved for future context)."""
+    _ = messages
+    return build_live_capacity_markdown(only_role=only_role)
+

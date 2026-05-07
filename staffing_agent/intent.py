@@ -80,6 +80,58 @@ def is_team_capacity_query(thread_plain: str, *, trigger_message_text: str | Non
     return False
 
 
+def thread_has_availability_capacity_ping(thread_plain: str) -> bool:
+    """
+    True when the thread includes wording like “who is available”, ``who_is_available`` (underscores
+    normalized), or “team capacity” — i.e. Delivery is being asked for a capacity snapshot, not only FYI.
+
+    Used with :func:`is_likely_deal_notification_thread` so Phase B can assign a hypothesis tier when a
+    CRM/deal paste is paired with an availability ping.
+    """
+    t = _normalize_slack_thread_text(thread_plain)
+    if "who is available" in t or "who's available" in t:
+        return True
+    if "team capacity" in t or "teamcapacity" in t:
+        return True
+    if "загрузка команды" in t or "кто свободен" in t:
+        return True
+    return False
+
+
+def single_role_focus_from_thread(thread_plain: str) -> str | None:
+    """
+    Detect a narrow staffing ask for one role (SoE, DPM, WFM, QM, SO) without using team-wide capacity wording.
+
+    Returns normalized bucket key: ``soe``, ``dpm``, ``wfm``, ``qm``, or ``so`` (accountable SO pool).
+    """
+    if not (thread_plain or "").strip():
+        return None
+    if is_team_capacity_query(thread_plain):
+        return None
+    tl = (thread_plain or "").lower()
+    has_tier = bool(re.search(r"(?i)\btier\s*[1-4]\b", thread_plain))
+    staffingish = bool(
+        re.search(
+            r"(?i)\b(need|want|looking\s+for|hire|staff(?:ing)?|find|open\s+role|req(?:uire)?|"
+            r"candidate|кого|нужен|нужна|нужны)\b",
+            thread_plain,
+        )
+    ) or has_tier
+    if not staffingish:
+        return None
+    if re.search(r"(?i)\b(need|want)\s+1\s+so\b(?!\w)|\baccountable\s+so\b", tl):
+        return "so"
+    if re.search(r"(?i)\b(ssoe|soe|solution\s+engineer)\b", tl):
+        return "soe"
+    if re.search(r"(?i)\bdpm\b", tl):
+        return "dpm"
+    if re.search(r"(?i)\bwfm\b|\bwfc\b", tl):
+        return "wfm"
+    if re.search(r"(?i)\bqm\b", tl):
+        return "qm"
+    return None
+
+
 def is_likely_deal_notification_thread(thread_plain: str) -> bool:
     """
     Heuristic: Attio / CRM «new deal» style paste (for logging, routing experiments, tests).

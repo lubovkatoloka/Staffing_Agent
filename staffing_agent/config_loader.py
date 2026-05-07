@@ -19,7 +19,7 @@ def load_decision_config() -> dict[str, Any]:
 
 
 def load_thresholds() -> dict[str, Any]:
-    """Backward-compatible name: same document (spec_version + occupation + …)."""
+    """Backward-compatible name: same document (spec_version + capacity rules + …)."""
     return load_decision_config()
 
 

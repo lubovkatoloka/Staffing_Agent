@@ -2,7 +2,7 @@
 
 Slack-based assistant for staffing decisions. Product logic is defined in Notion:
 
-- [Staffing Agent — Decision Logic v1.0](https://www.notion.so/toloka-ai/Staffing-Agent-Decision-Logic-v1-0-32749d0688568183af3bf80ff6aedfd4)
+- [Staffing Agent v2 — Capacity](https://www.notion.so/34b49d06885681468dd6d79d2e16d332)
 
 Track work in [GitHub Issues](https://github.com/lubovkatoloka/Staffing_Agent/issues).
 
@@ -17,7 +17,7 @@ python -m pytest tests/ -q
 
 If `ANTHROPIC_API_KEY` is unset (or `STAFFING_AGENT_MOCK_LLM=1`), extraction uses a **mock** `RequestSpec` so Slack still works.
 
-**Decision Logic (Notion → code):** rules and bands live in `config/decision_logic.yaml`. Availability tiers are implemented in `staffing_agent/decision/` (`classify_availability`, tests in `tests/test_decision_availability.py`). Keep YAML in sync with the [Notion spec](https://www.notion.so/toloka-ai/Staffing-Agent-Decision-Logic-v1-0-32749d0688568183af3bf80ff6aedfd4).
+**Capacity v2 (Notion → code):** rules and bands live in `config/decision_logic.yaml`. Core logic is in `staffing_agent/decision/capacity.py` (`assess`, `compute_capacity`, …); tests in `tests/test_capacity.py`.
 
 ### LLM (Anthropic Opus)
 
@@ -50,16 +50,16 @@ pip install -r requirements.txt
 2. **Socket Mode** → turn **On**.
 3. **Basic Information** → **App-Level Tokens** → generate token with scope `connections:write` → this is `SLACK_APP_TOKEN` (`xapp-…`).
 4. **OAuth & Permissions** → **Bot Token Scopes** (minimum for this stub):
-   - `app_mentions:read`
-   - `chat:write`
-   - `channels:history` (read thread in public channels)
-   - For private channels add `groups:history`.
+  - `app_mentions:read`
+  - `chat:write`
+  - `channels:history` (read thread in public channels)
+  - For private channels add `groups:history`.
 5. **Install to workspace** → copy **Bot User OAuth Token** → `SLACK_BOT_TOKEN` (`xoxb-…`).
 6. **Basic Information** → **Signing Secret** → `SLACK_SIGNING_SECRET`.
 7. **Event Subscriptions** (required, or the bot never sees `@mentions`):
-   - Turn **Enable Events** **ON**.
-   - Under **Subscribe to bot events**, add **`app_mention`** (and click **Save Changes**).
-   - Without this, Socket Mode connects but nothing triggers your handler.
+  - Turn **Enable Events** **ON**.
+  - Under **Subscribe to bot events**, add `**app_mention`** (and click **Save Changes**).
+  - Without this, Socket Mode connects but nothing triggers your handler.
 
 ### 3. Environment
 
@@ -77,14 +77,14 @@ If the bot still says the token is wrong but you pasted full values: your shell 
 ```bash
 cd "/Users/liubakarpova/Documents/Staffing Agent"
 source .venv/bin/activate
-python -m staffing_agent --check   # fast: only tests tokens (optional)
+python -m staffing_agent --check   # Slack auth.test + Databricks SELECT 1 if DATABRICKS_PROFILE is set
 python -m staffing_agent           # long-running: Socket Mode
 ```
 
 If the terminal seems to print nothing:
 
-1. Run **`python -m staffing_agent --check`** — should finish in ~1s.
-2. Open **`Staffing Agent/.staffing_agent_debug.log`** in the repo (the app appends lines here on every start, even if the terminal hides stderr).
+1. Run `**python -m staffing_agent --check**` — should finish in ~1s.
+2. Open `**Staffing Agent/.staffing_agent_debug.log**` in the repo (the app appends lines here on every start, even if the terminal hides stderr).
 3. Use **Terminal.app** instead of the IDE terminal, or run: `python -u -m staffing_agent`.
 
 Logs from the bot go to **stderr**; you should see steps `[1/4]` … `[4/4]` when the full bot starts.
@@ -105,5 +105,7 @@ When you `@mention` the bot, the terminal may look idle for **15–40 seconds** 
 
 ## Layout
 
+- [docs/FUNCTIONALITY_SCENARIOS.md](docs/FUNCTIONALITY_SCENARIOS.md) — полное описание функциональности и сценарии проверки.
 - `staffing_agent/slack_app.py` — Bolt app, thread fetch, placeholder reply.
 - `.env` — secrets (never committed).
+

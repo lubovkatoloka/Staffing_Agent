@@ -14,7 +14,31 @@ def test_build_reply_from_paste_mock(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "Staffing Agent — context" in reply
 
 
-def test_minimal_reply_without_tier_does_not_call_occupation(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_team_capacity_routes_to_live_capacity_markdown(monkeypatch: pytest.MonkeyPatch) -> None:
+    from staffing_agent.models.request_spec import RequestSpec
+    from staffing_agent.paste_run import build_slack_mention_reply
+
+    monkeypatch.setenv("STAFFING_AGENT_REPLY_STYLE", "minimal")
+    calls: list[str] = []
+
+    def _cap(*, only_role: object = None, timeout_sec: int = 300) -> str:
+        calls.append(str(only_role))
+        return "CAPACITY_SNAPSHOT_BODY"
+
+    monkeypatch.setattr("staffing_agent.paste_run.build_live_capacity_markdown", _cap)
+    spec = RequestSpec(tier=None, summary="capacity ask")
+    text = build_slack_mention_reply(
+        [{"user": "U1", "text": "Team capacity @bot"}],
+        [],
+        spec,
+        extraction_src_label="anthropic",
+        thread_plain="Team capacity @who_is_available",
+    )
+    assert calls == ["None"]
+    assert "CAPACITY_SNAPSHOT_BODY" in text
+
+
+def test_minimal_reply_without_tier_does_not_call_node3(monkeypatch: pytest.MonkeyPatch) -> None:
     """Off-topic threads: no Databricks node3; static Tier-required message instead."""
     from staffing_agent.models.request_spec import RequestSpec
     from staffing_agent.paste_run import build_slack_mention_reply
@@ -30,8 +54,7 @@ def test_minimal_reply_without_tier_does_not_call_occupation(monkeypatch: pytest
     spec = RequestSpec(tier=None, summary="A Google Doc about apps; not a staffing request.")
     text = build_slack_mention_reply([], [], spec, extraction_src_label="anthropic")
     assert not calls
-    assert "Tier required" in text
-    assert "team load" in text.lower() or "who is free" in text.lower()
+    assert "контекст" in text or "Team capacity" in text
 
 
 def test_attio_style_thread_minimal_has_no_internal_preamble(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -59,4 +82,4 @@ def test_build_reply_from_paste_minimal_mock(monkeypatch: pytest.MonkeyPatch) ->
     assert "Staffing Agent — context" not in reply
     assert "Phase B" not in reply
     assert "Context:" not in reply
-    assert "Recommendation" in reply or "Occupation" in reply
+    assert "Recommendation" in reply or "capacity" in reply.lower()

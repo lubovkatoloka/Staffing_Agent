@@ -1,14 +1,37 @@
 from staffing_agent.config_loader import load_decision_config
+from staffing_agent.decision import CapacityRow, assess
 from staffing_agent.node4_recommendation import build_project_recommendation_markdown
 from staffing_agent.staffing_csv import StaffingRecord
 
 
-def _r(name: str, email: str, role: str, occ: float) -> dict:
+def _proj(
+    pid: str,
+    pname: str,
+    *,
+    tier: str = "Tier 3",
+    stage: str = "building",
+    status: str = "ON_TRACK",
+) -> CapacityRow:
+    return CapacityRow(project_id=pid, project_name=pname, tier=tier, stage=stage, status=status)
+
+
+def _person(email: str, name: str, role: str, cfg, tier_ctx: int, *projects: CapacityRow) -> dict:
+    tw = cfg.get("tier_weights") or {}
+    npw = float(tw.get(f"Tier {tier_ctx}", 1.0))
+    v = assess(
+        list(projects),
+        on_pto_today=False,
+        pto_upcoming=None,
+        in_hard_exclude=False,
+        new_project_weight=npw,
+        cfg=cfg,
+    )
     return {
         "user_name": name,
         "user_email": email,
         "project_role": role,
-        "occupation": occ,
+        "_capacity_verdict": v,
+        "_capacity_rows": tuple(projects),
     }
 
 
@@ -29,12 +52,25 @@ def test_tier2_primary_is_free_lowest_occupation():
     staffing = {
         "first@test.com": _so("first@test.com"),
         "second@test.com": _so("second@test.com"),
-        "unver@test.com": _so("unver@test.com"),
     }
     rows = [
-        _r("Unver", "unver@test.com", "soe", 0.0),
-        _r("FirstPick", "first@test.com", "dpm", 0.05),
-        _r("SecondFree", "second@test.com", "soe", 0.2),
+        _person(
+            "first@test.com",
+            "FirstPick",
+            "dpm",
+            cfg,
+            2,
+            _proj("p1", "A", tier="Tier 2"),
+        ),
+        _person(
+            "second@test.com",
+            "SecondFree",
+            "soe",
+            cfg,
+            2,
+            _proj("p2", "B", tier="Tier 2"),
+            _proj("p3", "C", tier="Tier 2"),
+        ),
     ]
     text = build_project_recommendation_markdown(
         rows, tier=2, decision_cfg=cfg, staffing_by_email=staffing
@@ -53,10 +89,14 @@ def test_tier3_shows_on_active_orders_when_snapshot_provided():
         "s@t.com": _so("s@t.com"),
         "w@t.com": _so("w@t.com"),
     }
+
+    def _p3(email: str, name: str, role: str, tier_load: str):
+        return _person(email, name, role, cfg, 3, _proj(f"id-{email}", "Px", tier=tier_load))
+
     rows = [
-        _r("Dpm Lead", "d@t.com", "dpm", 0.05),
-        _r("Soe Dev", "s@t.com", "soe", 0.1),
-        _r("Wfm Ops", "w@t.com", "wfm", 0.15),
+        _p3("d@t.com", "Dpm Lead", "dpm", "Tier 2"),
+        _p3("s@t.com", "Soe Dev", "soe", "Tier 3"),
+        _p3("w@t.com", "Wfm Ops", "wfm", "Tier 3"),
     ]
     ps_rows = [
         {
@@ -95,8 +135,8 @@ def test_tier3_same_person_not_listed_under_so_and_soe():
         "b@t.com": _so("b@t.com"),
     }
     rows = [
-        _r("Amy DPM", "a@t.com", "dpm", 0.05),
-        _r("Bob Soe", "b@t.com", "soe", 0.06),
+        _person("a@t.com", "Amy DPM", "dpm", cfg, 3, _proj("p1", "P", tier="Tier 2")),
+        _person("b@t.com", "Bob Soe", "soe", cfg, 3, _proj("p2", "Q", tier="Tier 3")),
     ]
     text = build_project_recommendation_markdown(
         rows, tier=3, decision_cfg=cfg, staffing_by_email=staffing, detail="minimal"
@@ -115,17 +155,18 @@ def test_tier3_soe_skips_when_too_many_parallel_orders():
         "busy@t.com": _so("busy@t.com"),
         "free@t.com": _so("free@t.com"),
     }
+
+    def _one(email: str, name: str, role: str):
+        return _person(email, name, role, cfg, 3, _proj(email, "Px", tier="Tier 2"))
+
     rows = [
-        _r("Dpm A", "a@t.com", "dpm", 0.01),
-        _r("Dpm B", "b@t.com", "dpm", 0.02),
-        _r("Dpm C", "c@t.com", "dpm", 0.03),
-        _r("Busy SoE", "busy@t.com", "soe", 0.1),
-        _r("Free SoE", "free@t.com", "soe", 0.2),
+        _one("a@t.com", "Dpm A", "dpm"),
+        _one("b@t.com", "Dpm B", "dpm"),
+        _one("c@t.com", "Dpm C", "dpm"),
+        _one("busy@t.com", "Busy SoE", "soe"),
+        _one("free@t.com", "Free SoE", "soe"),
     ]
-    ps_rows = [
-        {"name": f"O{i}", "status": "ON_TRACK", "stage": "s", "soe": "Busy SoE"}
-        for i in range(3)
-    ]
+    ps_rows = [{"name": f"O{i}", "status": "ON_TRACK", "stage": "s", "soe": "Busy SoE"} for i in range(3)]
     text = build_project_recommendation_markdown(
         rows,
         tier=3,
@@ -147,13 +188,10 @@ def test_tier3_so_slot_skips_when_too_many_active_orders():
         "light@t.com": _so("light@t.com"),
     }
     rows = [
-        _r("Heavy DPM", "heavy@t.com", "dpm", 0.04),
-        _r("Light DPM", "light@t.com", "dpm", 0.08),
+        _person("heavy@t.com", "Heavy DPM", "dpm", cfg, 3, _proj("h", "H", tier="Tier 2")),
+        _person("light@t.com", "Light DPM", "dpm", cfg, 3, _proj("l", "L", tier="Tier 2")),
     ]
-    ps_rows = [
-        {"name": f"Ord{i}", "status": "ON_TRACK", "stage": "building", "dpm": "Heavy DPM"}
-        for i in range(3)
-    ]
+    ps_rows = [{"name": f"Ord{i}", "status": "ON_TRACK", "stage": "building", "dpm": "Heavy DPM"} for i in range(3)]
     text = build_project_recommendation_markdown(
         rows,
         tier=3,
@@ -175,9 +213,9 @@ def test_tier3_has_so_soe_wfm_sections():
         "w@t.com": _so("w@t.com"),
     }
     rows = [
-        _r("Dpm", "d@t.com", "dpm", 0.05),
-        _r("Soe", "s@t.com", "soe", 0.1),
-        _r("Wfm", "w@t.com", "wfm", 0.15),
+        _person("d@t.com", "Dpm", "dpm", cfg, 3, _proj("1", "P", tier="Tier 2")),
+        _person("s@t.com", "Soe", "soe", cfg, 3, _proj("2", "Q", tier="Tier 3")),
+        _person("w@t.com", "Wfm", "wfm", cfg, 3, _proj("3", "R", tier="Tier 3")),
     ]
     text = build_project_recommendation_markdown(
         rows, tier=3, decision_cfg=cfg, staffing_by_email=staffing, detail="minimal"
@@ -192,39 +230,12 @@ def test_tier3_has_so_soe_wfm_sections():
 def test_tier_none_asks_for_tier():
     cfg = load_decision_config()
     text = build_project_recommendation_markdown(
-        [_r("X", "x@test.com", "soe", 0.1)],
+        [_person("x@test.com", "X", "soe", cfg, 2, _proj("z", "Z"))],
         tier=None,
         decision_cfg=cfg,
         staffing_by_email={"x@test.com": _so("x@test.com")},
     )
     assert "Phase B" in text or "Tier" in text
-
-
-def test_all_unverified_still_lists_names():
-    cfg = load_decision_config()
-    staffing = {"a@test.com": _so("a@test.com"), "b@test.com": _so("b@test.com")}
-    rows = [
-        _r("A", "a@test.com", "soe", 0.0),
-        _r("B", "b@test.com", "dpm", 0.0),
-    ]
-    text = build_project_recommendation_markdown(rows, tier=2, decision_cfg=cfg, staffing_by_email=staffing)
-    assert "UNVERIFIED" in text
-    assert "A" in text or "B" in text
-
-
-def test_unverified_listed_even_when_many_free():
-    staffing = {f"{i}@t.com": _so(f"{i}@t.com") for i in range(5)}
-    rows = [
-        _r("U1", "0@t.com", "soe", 0.0),
-        _r("F1", "1@t.com", "dpm", 0.05),
-        _r("F2", "2@t.com", "soe", 0.1),
-        _r("F3", "3@t.com", "soe", 0.15),
-        _r("F4", "4@t.com", "dpm", 0.2),
-    ]
-    cfg = load_decision_config()
-    text = build_project_recommendation_markdown(rows, tier=2, decision_cfg=cfg, staffing_by_email=staffing)
-    assert "U1" in text
-    assert "UNVERIFIED" in text
 
 
 def test_executor_excluded_from_pick():
@@ -234,8 +245,8 @@ def test_executor_excluded_from_pick():
         "ok@test.com": _so("ok@test.com", so_status="SO"),
     }
     rows = [
-        _r("Exec", "exec@test.com", "soe", 0.1),
-        _r("Ok", "ok@test.com", "soe", 0.15),
+        _person("exec@test.com", "Exec", "soe", cfg, 2, _proj("e", "E", tier="Tier 2")),
+        _person("ok@test.com", "Ok", "soe", cfg, 2, _proj("o", "O", tier="Tier 2")),
     ]
     text = build_project_recommendation_markdown(rows, tier=2, decision_cfg=cfg, staffing_by_email=staffing)
     assert "First pick" in text
@@ -250,18 +261,19 @@ def test_skill_ranking_with_tags():
         "b@test.com": _so("b@test.com", skills=("Coding",)),
     }
     rows = [
-        _r("B", "b@test.com", "soe", 0.1),
-        _r("A", "a@test.com", "soe", 0.1),
+        _person("b@test.com", "B", "soe", cfg, 2, _proj("b", "B", tier="Tier 2")),
+        _person("a@test.com", "A", "soe", cfg, 2, _proj("a", "A", tier="Tier 2")),
     ]
     text = build_project_recommendation_markdown(
         rows,
         tier=2,
         decision_cfg=cfg,
+        staffing_by_email=staffing,
         project_type_tags=["TTS", "Evals"],
         summary="TTS eval",
-        staffing_by_email=staffing,
     )
     assert "A" in text
     ia = text.index("First pick")
     rest = text[ia : ia + 200]
     assert "A" in rest or "a@" in text
+

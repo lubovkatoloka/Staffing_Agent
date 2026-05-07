@@ -10,10 +10,12 @@ from dotenv import load_dotenv
 
 from staffing_agent.decision.node2_rules import node2_slack_markdown
 from staffing_agent.extraction import extract_request_spec
+from staffing_agent.intent import is_team_capacity_query, single_role_focus_from_thread
 from staffing_agent.models.request_spec import RequestSpec
 from staffing_agent.node3_occupation import node3_slack_markdown
 from staffing_agent.reply_template import reply_style
 from staffing_agent.slack_phase_c import build_phase_c_section
+from staffing_agent.team_capacity import build_live_capacity_markdown
 from staffing_agent.thread_context import (
     build_context_reply,
     format_thread_preview,
@@ -31,25 +33,53 @@ def _src_label(src: str) -> str:
         "mock": "mock (set ANTHROPIC_API_KEY; unset STAFFING_AGENT_MOCK_LLM)",
         "anthropic": "Anthropic Opus",
         "anthropic_fallback": "Anthropic failed — deal-feed heuristic summary",
+        "anthropic_rescue": "Anthropic/JSON failed — tier recovered from thread text",
         "error": "error",
     }.get(src, src)
 
 
 def _node3_markdown_when_no_tier() -> str:
-    """
-    When Phase B has no Tier, running Occupation + recommendation only repeats “set Tier” and wastes Databricks.
-    Use this instead of node3_slack_markdown for off-topic or incomplete threads.
-    """
+    """Phase B has no tier and thread did not match capacity / single-role heuristics."""
     return (
-        "*Staffing — Tier required*\n"
-        "_No Tier (1–4) was extracted from this thread. The bot matches people to roles only after Phase B has a "
-        "tier and a staffing-style ask (roles, timing). For a general availability snapshot without a specific project, "
-        "say that clearly in the thread so Phase B can classify it (e.g. team load / who is free)._ "
-        "_If this thread was not about staffing, you can ignore this reply._"
+        "*Staffing — нужен контекст*\n"
+        "_Не удалось распознать сценарий: снимок загрузки команды, узкий запрос по роли, или проект с tier._\n\n"
+        "*Примеры:*\n"
+        "• `Team capacity` @who_is_available — кто свободен по ролям (primary + alternates)\n"
+        "• `Need 1 SoE tier 3 …` — кандидаты под роль и полная команда при заданном tier\n"
+        "• Тред с описанием сделки + tier — подбор всех ролей под проект\n"
     )
 
 
-def _node3_for_spec(spec: RequestSpec) -> str:
+def _node2_markdown_for_reply(
+    spec: RequestSpec,
+    *,
+    capacity_mode: bool,
+    role_focus: bool,
+) -> str:
+    if capacity_mode:
+        return (
+            "*Node 2 — candidate pool (Decision Logic)*\n"
+            "_Для снимка загрузки tier не обязателен — ниже списки по ролям из Occupation + snapshot gates._"
+        )
+    if role_focus:
+        return (
+            "*Node 2 — candidate pool*\n"
+            "_Узкий список по одной роли. Полная команда (все слоты) — добавьте tier/scope в тред или запросите *team capacity*._"
+        )
+    return node2_slack_markdown(spec.tier, spec.project_type_tags)
+
+
+def _resolve_node3_body(
+    spec: RequestSpec,
+    *,
+    thread_plain: str,
+    trigger_message_text: str | None,
+) -> str:
+    if is_team_capacity_query(thread_plain, trigger_message_text=trigger_message_text):
+        return build_live_capacity_markdown()
+    role = single_role_focus_from_thread(thread_plain)
+    if role and spec.tier is None:
+        return build_live_capacity_markdown(only_role=role)
     if spec.tier is None:
         return _node3_markdown_when_no_tier()
     return node3_slack_markdown(
@@ -66,30 +96,34 @@ def build_slack_mention_reply(
     *,
     extraction_src_label: str,
     google_previews: list[dict[str, Any]] | None = None,
+    thread_plain: str | None = None,
+    trigger_message_text: str | None = None,
 ) -> str:
     """
     Single place for Socket Mode + paste: shape depends on STAFFING_AGENT_REPLY_STYLE.
     minimal — short summary + recommendation only; full — Phase A + JSON + Nodes 2–3 + Phase C.
+
+    ``thread_plain`` / ``trigger_message_text`` — для маршрутизации *team capacity* без tier (см. ``intent``).
     """
-    n3 = _node3_for_spec(spec)
+    tp = (thread_plain or "").strip() or format_thread_preview(messages)
+    trig = trigger_message_text
+    capacity_mode = is_team_capacity_query(tp, trigger_message_text=trig)
+    role_focus = bool(single_role_focus_from_thread(tp)) and spec.tier is None and not capacity_mode
+
+    n3 = _resolve_node3_body(spec, thread_plain=tp, trigger_message_text=trig)
+    node2 = _node2_markdown_for_reply(spec, capacity_mode=capacity_mode, role_focus=role_focus)
     rs = reply_style()
     if rs == "minimal":
-        reply = spec.to_slack_brief() + "\n\n" + n3
+        reply = spec.to_slack_brief() + "\n\n" + node2 + "\n\n" + n3
     elif rs == "compact":
-        reply = (
-            spec.to_slack_brief()
-            + "\n\n"
-            + node2_slack_markdown(spec.tier, spec.project_type_tags)
-            + "\n\n"
-            + n3
-        )
+        reply = spec.to_slack_brief() + "\n\n" + node2 + "\n\n" + n3
     else:
         reply = (
             build_context_reply(messages, previews=previews, google_previews=google_previews)
             + f"\n\n*Phase B — extraction (Node 1)* _(source: {extraction_src_label})_\n"
             + spec.to_slack_block()
             + "\n\n"
-            + node2_slack_markdown(spec.tier, spec.project_type_tags)
+            + node2
             + "\n\n"
             + n3
             + "\n\n"

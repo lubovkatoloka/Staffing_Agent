@@ -7,11 +7,13 @@ from staffing_agent.config_loader import (
 
 def test_decision_config_load() -> None:
     cfg = load_decision_config()
-    assert cfg["spec_version"] == "1.0"
+    assert cfg["spec_version"] == "2.0"
     assert "notion.so" in cfg.get("notion_spec_url", "")
-    assert cfg["occupation"]["free_below"] == 0.5
+    assert cfg["cap_units"] == 2.0
+    assert cfg["tier_weights"]["Tier 3"] == 1.0
     assert "staffing_ps_gates" in cfg
-    assert cfg["occupation"]["partial_below"] == 0.8
+    assert float(cfg["availability_bands"]["free_below"]) == 1.0
+    assert float(cfg["availability_bands"]["partial_below"]) == 2.0
 
 
 def test_load_thresholds_alias() -> None:

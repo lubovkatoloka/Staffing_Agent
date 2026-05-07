@@ -6,7 +6,7 @@ import os
 
 from staffing_agent.config_loader import load_decision_config
 from staffing_agent.databricks_cli import databricks_profile, run_sql_query, smoke_sql_text
-from staffing_agent.decision import classify_availability
+from staffing_agent.decision import CapacityRow, classify_band, compute_capacity
 
 
 def _slack_dbx_smoke_enabled() -> bool:
@@ -15,19 +15,18 @@ def _slack_dbx_smoke_enabled() -> bool:
 
 def build_phase_c_section() -> str:
     """
-    Short Slack block: example availability classification + optional DBX smoke.
-    Full Occupation/PTO SQL from Notion is not wired yet.
+    Short Slack block: example capacity classification + optional DBX smoke.
     """
     cfg = load_decision_config()
-    demo = classify_availability(
-        0.62,
-        active_project_count=2,
-        decision_cfg=cfg,
-    )
+    demo_rows = [
+        CapacityRow("demo_p", "Demo project", "Tier 3", "building", "ON_TRACK"),
+    ]
+    cu = compute_capacity(demo_rows, cfg)
+    band = classify_band(cu, cfg)
     lines = [
         "*Phase C — decision engine (demo)*",
-        f"_Example:_ occupation=0.62, active_projects=2 → `{demo.label.value}` ({demo.notes or 'band'})",
-        "_The main “who can take the project” recommendation is in the *Recommendation* block in Node 3 above; here is only a demo of the bands._",
+        f"_Example:_ two Tier 3 × building × ON_TRACK → capacity_used=*{cu:.2f}* → `{band.value}`",
+        "_The main recommendation is in the *Recommendation* block in Node 3 above; this is only a numeric demo._",
     ]
 
     prof = databricks_profile()

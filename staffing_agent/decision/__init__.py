@@ -1,4 +1,19 @@
-from staffing_agent.decision.availability import Availability, classify_availability
-from staffing_agent.decision.enums import AvailabilityLabel
+from staffing_agent.decision.capacity import (
+    CapacityRow,
+    CapacityVerdict,
+    assess,
+    classify_band,
+    compute_capacity,
+)
+from staffing_agent.decision.enums import Band, IneligibleReason, SoftReason
 
-__all__ = ["Availability", "AvailabilityLabel", "classify_availability"]
+__all__ = [
+    "Band",
+    "CapacityRow",
+    "CapacityVerdict",
+    "IneligibleReason",
+    "SoftReason",
+    "assess",
+    "classify_band",
+    "compute_capacity",
+]

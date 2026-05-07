@@ -1,4 +1,4 @@
-"""Shared helpers for parsing occupation query rows (avoid import cycles)."""
+"""Shared helpers for parsing Capacity / legacy SQL rows (avoid import cycles)."""
 
 from __future__ import annotations
 
@@ -14,9 +14,25 @@ def _row_get_ci(row: dict[str, Any], *candidates: str) -> Any:
 
 
 def project_role_norm(row: dict[str, Any]) -> str:
-    """Normalized `project_role` from occupation SQL (dpm, soe, wfm, …)."""
+    """Normalized `project_role` from Capacity SQL or legacy rows (dpm, soe, wfm, …)."""
     v = _row_get_ci(row, "project_role", "PROJECT_ROLE")
-    return (str(v) if v is not None else "").strip().lower()
+    if v is not None and str(v).strip():
+        return str(v).strip().lower()
+    rg = _row_get_ci(row, "role_group", "ROLE_GROUP")
+    if rg is None:
+        return ""
+    g = str(rg).strip().upper()
+    if "SOE" in g or "SSOE" in g:
+        return "soe"
+    if g == "DPM":
+        return "dpm"
+    if "WFM" in g or "WFC" in g:
+        return "wfm"
+    if "QM" in g or "QC" in g:
+        return "qm"
+    if g == "SE":
+        return "se"
+    return str(rg).strip().lower()
 
 
 def occupation_value(row: dict[str, Any]) -> float | None:

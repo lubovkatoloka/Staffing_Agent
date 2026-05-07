@@ -1,30 +1,47 @@
 import pytest
 
 from staffing_agent.config_loader import load_decision_config
+from staffing_agent.decision import CapacityRow, assess
 from staffing_agent.staffing_csv import StaffingRecord
 from staffing_agent.team_capacity import build_team_capacity_markdown
 
 
-def _row(
-    email: str,
-    name: str,
-    role: str,
-    occ: float,
-) -> dict:
+def _proj(
+    pid: str = "p",
+    pname: str = "P",
+    *,
+    tier: str = "Tier 3",
+    stage: str = "building",
+    status: str = "ON_TRACK",
+) -> CapacityRow:
+    return CapacityRow(project_id=pid, project_name=pname, tier=tier, stage=stage, status=status)
+
+
+def _person(email: str, name: str, role: str, cfg, *projects: CapacityRow) -> dict:
+    v = assess(
+        list(projects),
+        on_pto_today=False,
+        pto_upcoming=None,
+        in_hard_exclude=False,
+        new_project_weight=0.0,
+        cfg=cfg,
+    )
     return {
         "user_email": email,
         "user_name": name,
         "project_role": role,
-        "occupation": occ,
+        "_capacity_verdict": v,
+        "_capacity_rows": tuple(projects),
     }
 
 
 def test_build_team_capacity_sections_and_slots(monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = load_decision_config()
     rows = [
-        _row("a@t.com", "Alice SoE", "soe", 0.1),
-        _row("b@t.com", "Bob DPM", "dpm", 0.15),
-        _row("c@t.com", "Wally WFM", "wfm", 0.2),
-        _row("d@t.com", "Quinn QM", "qm", 0.1),
+        _person("a@t.com", "Alice SoE", "soe", cfg, _proj("p1", "Pa", tier="Tier 2")),
+        _person("b@t.com", "Bob DPM", "dpm", cfg, _proj("p2", "Pb", tier="Tier 2")),
+        _person("c@t.com", "Wally WFM", "wfm", cfg, _proj("p3", "Pc", tier="Tier 2")),
+        _person("d@t.com", "Quinn QM", "qm", cfg, _proj("p4", "Pd", tier="Tier 2")),
     ]
     staffing = {
         "a@t.com": StaffingRecord(
@@ -48,7 +65,7 @@ def test_build_team_capacity_sections_and_slots(monkeypatch: pytest.MonkeyPatch)
     }
     monkeypatch.setattr("staffing_agent.team_capacity.load_staffing_records", lambda: staffing)
 
-    text = build_team_capacity_markdown(rows)
+    text = build_team_capacity_markdown(rows, decision_cfg=cfg)
     assert "Team capacity" in text
     assert "Alice SoE" in text
     assert "Bob DPM" in text
@@ -56,12 +73,48 @@ def test_build_team_capacity_sections_and_slots(monkeypatch: pytest.MonkeyPatch)
     assert "Tier 1 — scoping" in text
     assert "Tier 2" in text
     assert "No project staffing snapshot" in text
+    assert "*Primary:*" in text
+    assert "*Alternate:*" in text
+
+
+def test_only_role_soe_slice(monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = load_decision_config()
+    rows = [
+        _person("a@t.com", "Alice SoE", "soe", cfg, _proj("p1", "P1", tier="Tier 2")),
+        _person("b@t.com", "Bob DPM", "dpm", cfg, _proj("p2", "P2", tier="Tier 2")),
+    ]
+    staffing = {
+        "a@t.com": StaffingRecord(
+            name="Alice",
+            email="a@t.com",
+            job_title="",
+            comment="",
+            role_tag="",
+            so_status="SO",
+            skills=(),
+        ),
+        "b@t.com": StaffingRecord(
+            name="Bob",
+            email="b@t.com",
+            job_title="",
+            comment="",
+            role_tag="",
+            so_status="SO",
+            skills=(),
+        ),
+    }
+    monkeypatch.setattr("staffing_agent.team_capacity.load_staffing_records", lambda: staffing)
+    text = build_team_capacity_markdown(rows, decision_cfg=cfg, only_role="soe")
+    assert "role shortlist" in text.lower()
+    assert "Alice SoE" in text
+    assert "Bob DPM" not in text
 
 
 def test_team_capacity_snapshot_hold_for_three_plus_heavy(monkeypatch: pytest.MonkeyPatch) -> None:
     """SO list (tier=2 gates): 3+ stab orders → hold, same as Node 4."""
+    cfg = load_decision_config()
     rows = [
-        _row("n@t.com", "Nina Erlich", "soe", 0.3),
+        _person("n@t.com", "Nina Erlich", "soe", cfg, _proj("px", "Px", tier="Tier 2")),
     ]
     staffing = {
         "n@t.com": StaffingRecord(
@@ -82,9 +135,10 @@ def test_team_capacity_snapshot_hold_for_three_plus_heavy(monkeypatch: pytest.Mo
     ]
     text = build_team_capacity_markdown(
         rows,
-        decision_cfg=load_decision_config(),
+        decision_cfg=cfg,
         project_staffing_rows=ps_rows,
     )
     assert "project_staffing.sql" in text
     assert "Hold (snapshot" in text
     assert "hold for Tier < 3" in text
+

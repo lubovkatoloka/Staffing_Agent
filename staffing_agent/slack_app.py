@@ -190,11 +190,12 @@ def create_app() -> App:
             "mock": "mock (set ANTHROPIC_API_KEY; unset STAFFING_AGENT_MOCK_LLM)",
             "anthropic": "Anthropic Opus",
             "anthropic_fallback": "Anthropic failed — deal-feed heuristic summary",
+            "anthropic_rescue": "Anthropic/JSON failed — tier recovered from thread text",
             "error": "error",
         }.get(src, src)
 
         print(
-            "[staffing] Node 2–3: building pool text + optional Databricks occupation query…",
+            "[staffing] Node 2–3: building pool text + optional Databricks capacity query…",
             file=sys.stderr,
             flush=True,
         )
@@ -204,6 +205,8 @@ def create_app() -> App:
             spec,
             extraction_src_label=src_label,
             google_previews=google_previews,
+            thread_plain=thread_plain,
+            trigger_message_text=(event.get("text") or None),
         )
 
         if len(reply) > 12000:
