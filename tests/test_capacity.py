@@ -58,9 +58,72 @@ def test_t3_close_out_on_track_zero(cfg):
     assert compute_capacity(rows, cfg) == pytest.approx(0.0)
 
 
-def test_scoping_zero_any_status(cfg):
-    rows = [_row("Tier 4", "scoping_solution_design", "BLOCKED_INTERNAL")]
-    assert compute_capacity(rows, cfg) == pytest.approx(0.0)
+def test_t4_scoping_on_track_alone_matrix_sanity(cfg):
+    rows = [_row("Tier 4", "scoping_solution_design", "ON_TRACK")]
+    cu = compute_capacity(rows, cfg)
+    assert cu == pytest.approx(1.0)
+    assert classify_band(cu, cfg) == Band.PARTIAL
+
+
+def test_t3_scoping_behind_alone_matrix_sanity(cfg):
+    rows = [_row("Tier 3", "scoping_solution_design", "BEHIND")]
+    cu = compute_capacity(rows, cfg)
+    assert cu == pytest.approx(1.0)
+    assert classify_band(cu, cfg) == Band.PARTIAL
+
+
+def test_t4_scoping_behind_alone_matrix_sanity(cfg):
+    rows = [_row("Tier 4", "scoping_solution_design", "BEHIND")]
+    cu = compute_capacity(rows, cfg)
+    assert cu == pytest.approx(2.0)
+    assert classify_band(cu, cfg) == Band.AT_CAP
+
+
+def test_t2_scoping_on_track_alone_matrix_sanity(cfg):
+    rows = [_row("Tier 2", "scoping_solution_design", "ON_TRACK")]
+    cu = compute_capacity(rows, cfg)
+    assert cu == pytest.approx(0.335, abs=0.001)
+    assert classify_band(cu, cfg) == Band.FREE
+
+
+def test_t3_scoping_plus_t3_building_on_track_matrix_sanity(cfg):
+    rows = [
+        _row("Tier 3", "scoping_solution_design", "ON_TRACK", "p1"),
+        _row("Tier 3", "building", "ON_TRACK", "p2"),
+    ]
+    cu = compute_capacity(rows, cfg)
+    assert cu == pytest.approx(1.5)
+    assert classify_band(cu, cfg) == Band.PARTIAL
+
+
+def test_two_t3_scoping_on_track_matrix_sanity(cfg):
+    rows = [
+        _row("Tier 3", "scoping_solution_design", "ON_TRACK", "p1"),
+        _row("Tier 3", "scoping_solution_design", "ON_TRACK", "p2"),
+    ]
+    cu = compute_capacity(rows, cfg)
+    assert cu == pytest.approx(1.0)
+    assert classify_band(cu, cfg) == Band.PARTIAL
+
+
+def test_t4_scoping_on_track_plus_t2_close_out_on_track(cfg):
+    rows = [
+        _row("Tier 4", "scoping_solution_design", "ON_TRACK", "p1"),
+        _row("Tier 2", "close_out_retrospective", "ON_TRACK", "p2"),
+    ]
+    cu = compute_capacity(rows, cfg)
+    assert cu == pytest.approx(1.0)
+    assert classify_band(cu, cfg) == Band.PARTIAL
+
+
+def test_t4_scoping_at_risk_plus_t3_close_out_on_track(cfg):
+    rows = [
+        _row("Tier 4", "scoping_solution_design", "AT_RISK", "p1"),
+        _row("Tier 3", "close_out_retrospective", "ON_TRACK", "p2"),
+    ]
+    cu = compute_capacity(rows, cfg)
+    assert cu == pytest.approx(2.0)
+    assert classify_band(cu, cfg) == Band.AT_CAP
 
 
 # --- classify_band ---
@@ -103,10 +166,10 @@ def test_assess_capacity_overflow(cfg):
 
 
 def test_assess_max_projects_cap_uliumdzhi(cfg):
-    """4 scoping projects => capacity 0 but eligible=False via hard rule."""
+    """4 scoping projects => hits max_active_projects before overflow semantics matter."""
     rows = [_row("Tier 3", "scoping_solution_design", "BLOCKED_INTERNAL", f"p{i}") for i in range(4)]
     v = assess(rows, on_pto_today=False, pto_upcoming=None, in_hard_exclude=False, new_project_weight=1.0, cfg=cfg)
-    assert v.capacity_used == pytest.approx(0.0)
+    assert v.capacity_used == pytest.approx(2.0)
     assert v.total_projects == 4
     assert v.eligible_for_new is False
     assert v.ineligible_reason == IneligibleReason.MAX_PROJECTS_CAP
@@ -148,9 +211,11 @@ def test_assess_capacity_at_one_thirty_four_plus_t3_overflow(cfg):
 # --- soft signal ---
 
 
-def test_soft_all_scoping(cfg):
-    rows = [_row("Tier 3", "scoping_solution_design", "BLOCKED_INTERNAL", f"p{i}") for i in range(2)]
+def test_soft_all_discovery_zero_capacity(cfg):
+    """all_scoping_or_discovery fires only when capacity_used == 0; discovery-only rows stay at 0 load."""
+    rows = [_row("Tier 3", "discovery", "ON_TRACK", f"p{i}") for i in range(2)]
     v = assess(rows, on_pto_today=False, pto_upcoming=None, in_hard_exclude=False, new_project_weight=1.0, cfg=cfg)
+    assert v.capacity_used == pytest.approx(0.0)
     assert v.is_soft is True
     assert SoftReason.ALL_SCOPING_OR_DISCOVERY in v.soft_reasons
 

@@ -34,12 +34,13 @@ stage_status_matrix:
     BEHIND: 0.0
     BLOCKED_CLIENT: 0.0
     BLOCKED_INTERNAL: 0.0
+  # CR-7: scoping carries real load (half of building ON_TRACK; AT_RISK/BEHIND match building penalties).
   scoping_solution_design:
-    ON_TRACK: 0.0
-    AT_RISK: 0.0
-    BEHIND: 0.0
-    BLOCKED_CLIENT: 0.0
-    BLOCKED_INTERNAL: 0.0
+    ON_TRACK: 0.5
+    AT_RISK: 1.0
+    BEHIND: 1.0
+    BLOCKED_CLIENT: 0.5
+    BLOCKED_INTERNAL: 0.5
 
 availability_bands:
   free_below: 1.0       # capacity_used < 1.0  -> FREE
