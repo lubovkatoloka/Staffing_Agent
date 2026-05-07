@@ -36,13 +36,13 @@ def node2_slack_markdown(tier: Optional[int], project_type_tags: list[str]) -> s
             "*Ownership (Tier 3 · M):* SO = SSoE or DPM; + SoE + WFM (WFC).\n"
             "*Target FTE:* ~1.7 per project.\n"
             "*Source pool:* people from *similar completed projects* with matching type tags.\n"
-            "*Domain match:* **required** — filter by tag overlap / semantic match (Phase 2 in product roadmap)."
+            "*Domain match:* *required* — filter by tag overlap / semantic match (Phase 2 in product roadmap)."
         ),
         4: (
             "*Ownership (Tier 4 · L):* SO = SSoE or DPM; + SoE + WFM + SE (strategic / high-risk / custom infra).\n"
             "*Target FTE:* ~3 per project. Commercial engagement as needed for deal shape.\n"
             "*Source pool:* people from *similar completed projects* with matching type tags.\n"
-            "*Domain match:* **required**."
+            "*Domain match:* *required*."
         ),
     }
     body = rows.get(tier, "_Unknown tier._")

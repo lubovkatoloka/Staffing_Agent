@@ -4,20 +4,20 @@ Who can take the project — ranked recommendation from Capacity v2 rows + Peopl
 
 from __future__ import annotations
 
+import re
 from typing import Any, Literal, Mapping, NamedTuple, Optional
 
 from staffing_agent.capacity_runtime import (
     default_new_project_weight,
-    format_capacity_projects_line,
     prepare_rows_for_recommendation,
 )
-from staffing_agent.decision import CapacityVerdict
+from staffing_agent.decision import CapacityRow, CapacityVerdict
 from staffing_agent.decision.enums import Band, IneligibleReason
+from staffing_agent.decision.team_template import SLOT_TO_SECTION_HEADER, team_template_for
 from staffing_agent.node3_row_utils import email_value, name_value, project_role_norm
 from staffing_agent.node3_tier_preview import occupation_preview_roles
 from staffing_agent.project_staffing_gates import (
     active_project_rows_for_person,
-    gate_reason_label,
     project_staffing_gate_reason,
 )
 from staffing_agent.staffing_csv import (
@@ -29,36 +29,21 @@ from staffing_agent.staffing_csv import (
     skill_match_score,
 )
 
-# Short public line: ownership shape by tier + skills (tags or summary excerpt).
-_TIER_TEAM_LABEL: dict[int, str] = {
-    1: "DPM, WFM, QM",
-    2: "SoE or DPM (SO), WFM, QM",
-    3: "SSoE or DPM (SO), SoE, WFM/WFC",
-    4: "SoE or DPM (SO), SoE, WFM, SE",
-}
-
-
-def _minimal_team_skills_why(tier: int, tags: list[str], summary: str) -> str:
-    """Single `_Why:_` line: expected roles + skill focus — no Databricks/SCM boilerplate."""
-    team = _TIER_TEAM_LABEL.get(tier, f"Tier {tier} ownership roles")
-    if tags:
-        sk = ", ".join(tags[:12])
-        if len(tags) > 12:
-            sk += "…"
-        return f"_Why:_ *Team:* {team}. *Skills:* {sk}_"
-    s = " ".join((summary or "").split())
-    if s:
-        if len(s) > 140:
-            s = s[:137] + "…"
-        return f"_Why:_ *Team:* {team}. *Skills:* _{s}_"
-    return f"_Why:_ *Team:* {team}. *Skills:* _add tags or a short summary in Phase B for a tighter match._"
-
 
 class Tier3RoleBuckets(NamedTuple):
-    """Primary shortlist (top 3) + alternates (next N by rank) for one Tier 3 role line."""
+    """Primary (rank #1) + alternates (next by rank) for one template slot."""
 
     primary: list[tuple[dict[str, Any], CapacityVerdict, StaffingRecord | None, int, str | None]]
     alternate: list[tuple[dict[str, Any], CapacityVerdict, StaffingRecord | None, int, str | None]]
+
+
+_STAGE_SHORT = {
+    "building": "build",
+    "stabilisation_delivery": "stab",
+    "scoping_solution_design": "scoping",
+    "discovery": "disc",
+    "close_out_retrospective": "close-out",
+}
 
 
 def _verdict(row: dict[str, Any]) -> CapacityVerdict:
@@ -80,31 +65,8 @@ def _so_rank(rec: StaffingRecord | None, *, needs_so: bool) -> int:
     return 1
 
 
-def _cap_line(v: CapacityVerdict, new_pw: float) -> str:
-    cu = v.capacity_used
-    if new_pw > 0:
-        return f"*capacity {cu:.2f}* → *{cu + new_pw:.2f}* after new"
-    return f"*capacity {cu:.2f}*"
-
-
 def _needs_so_table_filter(project_role: str) -> bool:
-    """SO / responsible per table — only for SoE/DPM."""
     return (project_role or "").strip().lower() in ("soe", "dpm")
-
-
-def _soft_suffix(v: CapacityVerdict) -> str:
-    if not v.is_soft or not v.soft_reasons:
-        return ""
-    parts = ", ".join(sr.value for sr in v.soft_reasons)
-    return f" `[SOFT: {parts}]`"
-
-
-def _pto_hint(row: dict[str, Any], v: CapacityVerdict) -> str:
-    bits: list[str] = []
-    up = v.pto_upcoming_dates
-    if up:
-        bits.append(f"⚠️ PTO {up[0]}..{up[1]}")
-    return (" _" + " · ".join(bits) + "_") if bits else ""
 
 
 def _staffing_full_scored(
@@ -226,76 +188,6 @@ def _scored_tuple_sort_key(
     )
 
 
-def _short_why_so_line(
-    r: dict[str, Any],
-    verdict: CapacityVerdict,
-    rec: StaffingRecord | None,
-    sk: int,
-    *,
-    new_pw: float,
-) -> str:
-    pr = project_role_norm(r) or "?"
-    crs = tuple(r.get("_capacity_rows") or ())
-    proj_line = format_capacity_projects_line(crs)
-    bits = [
-        _cap_line(verdict, new_pw),
-        f"`{verdict.band.value}`",
-        f"role `{pr}`",
-        f"{len(crs)} active projects{_soft_suffix(verdict)}{_pto_hint(r, verdict)}",
-    ]
-    if sk:
-        bits.append(f"tag/summary match ≈ {sk}")
-    if rec:
-        so = (rec.so_status or "—").strip() or "—"
-        bits.append(f"People & Tags SO status: *{so}*")
-    bits.append("fits SO accountability (SSoE or DPM) per Tier 3 ownership model")
-    return "_Why:_ " + "; ".join(bits) + "_\n  _Projects:_ " + proj_line + "_"
-
-
-def _short_why_role_line(
-    r: dict[str, Any],
-    verdict: CapacityVerdict,
-    rec: StaffingRecord | None,
-    sk: int,
-    role_label: str,
-    *,
-    new_pw: float,
-) -> str:
-    crs = tuple(r.get("_capacity_rows") or ())
-    proj_line = format_capacity_projects_line(crs)
-    bits = [
-        _cap_line(verdict, new_pw),
-        f"`{verdict.band.value}`",
-        f"role `{project_role_norm(r) or '?'}`",
-        f"{len(crs)} active projects{_soft_suffix(verdict)}{_pto_hint(r, verdict)}",
-    ]
-    if sk:
-        bits.append(f"tag/summary match ≈ {sk}")
-    bits.append(f"strong fit for *{role_label}* slot on the team")
-    return "_Why:_ " + "; ".join(bits) + "_\n  _Projects:_ " + proj_line + "_"
-
-
-def _format_tier3_person_line(
-    it: tuple[dict[str, Any], CapacityVerdict, StaffingRecord | None, int, str | None],
-    *,
-    why_fn,
-    project_staffing_rows: list[dict[str, Any]] | None = None,
-) -> list[str]:
-    r, verdict, rec, sk, gate_reason = it
-    nm = name_value(r)
-    out = [f"• *{nm}*"]
-    out.append(f"  {why_fn(r, verdict, rec, sk)}")
-    if gate_reason == "ps_scoping_discovery_only":
-        out.append(f"  _({gate_reason_label(gate_reason)})_")
-    if project_staffing_rows:
-        from staffing_agent.node3_project_staffing import inline_active_orders_markdown
-
-        busy = inline_active_orders_markdown(project_staffing_rows, nm)
-        if busy:
-            out.append(f"  {busy}")
-    return out
-
-
 def _tier3_int_setting(decision_cfg: Mapping[str, Any], key: str, *, default: int) -> int:
     t3 = (decision_cfg or {}).get("tier3_recommendation") or {}
     raw = t3.get(key, default)
@@ -322,8 +214,6 @@ def _tier3_team_slices(
     so_cap = _tier3_int_setting(cfg, "exclude_so_if_active_orders_gte", default=3)
     soe_cap = _tier3_int_setting(cfg, "exclude_soe_if_active_orders_gte", default=3)
     wfm_cap = _tier3_int_setting(cfg, "exclude_wfm_if_active_orders_gte", default=0)
-    alt_n = _tier3_int_setting(cfg, "alternate_slots_per_role", default=3)
-    alt_n = min(alt_n, 10)
 
     def _orders(nm: str) -> int:
         return count_active_orders_for_person(ps, nm)
@@ -337,8 +227,8 @@ def _tier3_team_slices(
     so_pool_raw = [it for it in so_pool_raw if _pass_cap(name_value(it[0]), so_cap)]
 
     so_pool = sorted(so_pool_raw, key=_scored_tuple_sort_key)
-    so_primary = so_pool[:3]
-    so_alternate = so_pool[3 : 3 + alt_n]
+    so_primary = so_pool[:1]
+    so_alternate = so_pool[1:3]
 
     so_emails_primary = {
         email_value(it[0]).strip().lower()
@@ -352,14 +242,14 @@ def _tier3_team_slices(
     soe_for_team = [
         it for it in soe_pool if email_value(it[0]).strip().lower() not in so_emails_primary
     ]
-    soe_primary = soe_for_team[:3]
-    soe_alternate = soe_for_team[3 : 3 + alt_n]
+    soe_primary = soe_for_team[:1]
+    soe_alternate = soe_for_team[1:3]
 
     wfm_pool_raw = [it for it in pickable_scored if project_role_norm(it[0]) == "wfm"]
     wfm_pool_raw = [it for it in wfm_pool_raw if _pass_cap(name_value(it[0]), wfm_cap)]
     wfm_pool = sorted(wfm_pool_raw, key=_scored_tuple_sort_key)
-    wfm_primary = wfm_pool[:3]
-    wfm_alternate = wfm_pool[3 : 3 + alt_n]
+    wfm_primary = wfm_pool[:1]
+    wfm_alternate = wfm_pool[1:3]
 
     return (
         Tier3RoleBuckets(so_primary, so_alternate),
@@ -368,151 +258,281 @@ def _tier3_team_slices(
     )
 
 
-def _format_tier3_alternate_bullets(
-    items: list[tuple[dict[str, Any], CapacityVerdict, StaffingRecord | None, int, str | None]],
-    *,
-    project_staffing_rows: list[dict[str, Any]] | None,
-    new_pw: float,
-) -> list[str]:
-    from staffing_agent.node3_project_staffing import count_active_orders_for_person
-
-    out: list[str] = []
-    for it in items:
-        r, verdict, _rec, _sk, _reason = it
-        nm = name_value(r)
-        n_ord = (
-            count_active_orders_for_person(project_staffing_rows or [], nm)
-            if project_staffing_rows
-            else None
-        )
-        ord_s = f"{n_ord} active orders" if n_ord is not None else "orders n/a"
-        soft = _soft_suffix(verdict)
-        out.append(
-            f"• *{nm}* — {_cap_line(verdict, new_pw)} `{verdict.band.value}`; _{ord_s} (snapshot)_{soft}"
-        )
-    return out
-
-
-def _build_tier3_team_markdown(
+def _tier4_team_slices(
     scored: list[tuple[dict[str, Any], CapacityVerdict, StaffingRecord | None, int, str | None]],
     *,
-    minimal: bool,
-    csv_loaded: bool,
-    project_staffing_rows: list[dict[str, Any]] | None = None,
-    decision_cfg: Mapping[str, Any] | None = None,
-    project_type_tags: Optional[list[str]] = None,
-    summary: str = "",
-    new_project_weight: float,
-) -> str:
+    project_staffing_rows: list[dict[str, Any]] | None,
+    decision_cfg: Mapping[str, Any],
+) -> tuple[Tier3RoleBuckets, Tier3RoleBuckets, Tier3RoleBuckets, Tier3RoleBuckets]:
+    from staffing_agent.node3_project_staffing import count_active_orders_for_person
+
+    pickable_scored = [it for it in scored if _is_pickable_tuple(it)]
     cfg: Mapping[str, Any] = decision_cfg or {}
+    ps = project_staffing_rows or []
     has_ps = bool(project_staffing_rows)
+
     so_cap = _tier3_int_setting(cfg, "exclude_so_if_active_orders_gte", default=3)
     soe_cap = _tier3_int_setting(cfg, "exclude_soe_if_active_orders_gte", default=3)
     wfm_cap = _tier3_int_setting(cfg, "exclude_wfm_if_active_orders_gte", default=0)
-    gate_any = has_ps and (so_cap > 0 or soe_cap > 0 or wfm_cap > 0)
-    tags = list(project_type_tags or [])
-    npw = new_project_weight
+    se_cap = _tier3_int_setting(cfg, "exclude_se_if_active_orders_gte", default=0)
 
-    if minimal:
-        lines = [
-            "*Recommendation — Tier 3 team*",
-            _minimal_team_skills_why(3, tags, summary),
-        ]
-    else:
-        lines = [
-            "*Recommendation — Tier 3 team (Capacity v2)*",
-            "_Model: SO (SSoE or DPM) + SoE + WFM/WFC · Capacity SQL + People & Tags; verify calendar/SCM before slot._",
-        ]
-        if csv_loaded:
-            lines.append("_People & Tags loaded._")
-        else:
-            lines.append("_CSV not loaded — SO checks limited._")
+    def _orders(nm: str) -> int:
+        return count_active_orders_for_person(ps, nm)
 
-    if not minimal and gate_any:
-        cap_parts: list[str] = []
-        if so_cap > 0:
-            cap_parts.append(f"SO: skip if ≥{so_cap} parallel orders in snapshot")
-        if soe_cap > 0:
-            cap_parts.append(f"SoE: skip if ≥{soe_cap} parallel orders in snapshot")
-        if wfm_cap > 0:
-            cap_parts.append(f"WFM: skip if ≥{wfm_cap} parallel orders in snapshot")
-        cap_line = "; ".join(cap_parts)
-        lines.append(
-            "_Node 4: SoE primary excludes anyone in the SO primary shortlist (distinct seats). "
-            f"{cap_line}. "
-            "Alternates = next in rank after the same rules (not manual name blocks). "
-            "Tune caps in decision_logic.yaml (tier3_recommendation)._"
-        )
-    elif not minimal:
-        lines.append(
-            "_Node 4: SoE primary excludes SO primary shortlist. "
-            "Parallel-order caps apply when `project_staffing` snapshot is available._"
-        )
+    def _pass_cap(nm: str, cap: int) -> bool:
+        if not has_ps or cap <= 0:
+            return True
+        return _orders(nm) < cap
 
-    so_b, soe_b, wfm_b = _tier3_team_slices(
-        scored,
-        project_staffing_rows=project_staffing_rows,
-        decision_cfg=cfg,
+    so_pool_raw = [it for it in pickable_scored if project_role_norm(it[0]) in frozenset({"dpm", "soe"})]
+    so_pool_raw = [it for it in so_pool_raw if _pass_cap(name_value(it[0]), so_cap)]
+    so_pool = sorted(so_pool_raw, key=_scored_tuple_sort_key)
+    so_primary = so_pool[:1]
+    so_alternate = so_pool[1:3]
+
+    so_emails_primary = {
+        email_value(it[0]).strip().lower()
+        for it in so_primary
+        if (email_value(it[0]) or "").strip()
+    }
+
+    soe_pool_raw = [it for it in pickable_scored if project_role_norm(it[0]) == "soe"]
+    soe_pool_raw = [it for it in soe_pool_raw if _pass_cap(name_value(it[0]), soe_cap)]
+    soe_pool = sorted(soe_pool_raw, key=_scored_tuple_sort_key)
+    soe_for_team = [
+        it for it in soe_pool if email_value(it[0]).strip().lower() not in so_emails_primary
+    ]
+    soe_primary = soe_for_team[:1]
+    soe_alternate = soe_for_team[1:3]
+
+    wfm_pool_raw = [it for it in pickable_scored if project_role_norm(it[0]) == "wfm"]
+    wfm_pool_raw = [it for it in wfm_pool_raw if _pass_cap(name_value(it[0]), wfm_cap)]
+    wfm_pool = sorted(wfm_pool_raw, key=_scored_tuple_sort_key)
+    wfm_primary = wfm_pool[:1]
+    wfm_alternate = wfm_pool[1:3]
+
+    se_pool_raw = [it for it in pickable_scored if project_role_norm(it[0]) == "se"]
+    se_pool_raw = [it for it in se_pool_raw if _pass_cap(name_value(it[0]), se_cap)]
+    se_pool = sorted(se_pool_raw, key=_scored_tuple_sort_key)
+    se_primary = se_pool[:1]
+    se_alternate = se_pool[1:3]
+
+    return (
+        Tier3RoleBuckets(so_primary, so_alternate),
+        Tier3RoleBuckets(soe_primary, soe_alternate),
+        Tier3RoleBuckets(wfm_primary, wfm_alternate),
+        Tier3RoleBuckets(se_primary, se_alternate),
     )
 
-    lines.append("")
-    lines.append("*SO (SSoE or DPM)*")
-    if so_b.primary:
-        for it in so_b.primary:
-            lines.extend(
-                _format_tier3_person_line(
-                    it,
-                    why_fn=lambda r, v, rec, sk: _short_why_so_line(r, v, rec, sk, new_pw=npw),
-                    project_staffing_rows=project_staffing_rows,
-                )
-            )
-    else:
-        lines.append("• _No pickable SO candidates (DPM/SoE) with current rules — check CSV SO status or escalate._")
-    if so_b.alternate:
-        lines.append("_Alternates (next in rank):_")
-        lines.extend(
-            _format_tier3_alternate_bullets(so_b.alternate, project_staffing_rows=project_staffing_rows, new_pw=npw)
-        )
 
-    lines.append("")
-    lines.append("*SoE*")
-    if soe_b.primary:
-        for it in soe_b.primary:
-            lines.extend(
-                _format_tier3_person_line(
-                    it,
-                    why_fn=lambda r, v, rec, sk: _short_why_role_line(r, v, rec, sk, "SoE", new_pw=npw),
-                    project_staffing_rows=project_staffing_rows,
-                )
-            )
-    else:
-        lines.append("• _No pickable SoE rows in this slice._")
-    if soe_b.alternate:
-        lines.append("_Alternates (next in rank):_")
-        lines.extend(
-            _format_tier3_alternate_bullets(soe_b.alternate, project_staffing_rows=project_staffing_rows, new_pw=npw)
-        )
+def _tier1_team_slices(
+    scored: list[tuple[dict[str, Any], CapacityVerdict, StaffingRecord | None, int, str | None]],
+) -> tuple[Tier3RoleBuckets, Tier3RoleBuckets]:
+    pickable_scored = [it for it in scored if _is_pickable_tuple(it)]
+    so_pool = sorted(
+        [it for it in pickable_scored if project_role_norm(it[0]) in frozenset({"dpm", "wfm"})],
+        key=_scored_tuple_sort_key,
+    )
+    wfm_pool = sorted(
+        [it for it in pickable_scored if project_role_norm(it[0]) == "wfm"],
+        key=_scored_tuple_sort_key,
+    )
+    return (
+        Tier3RoleBuckets(so_pool[:1], so_pool[1:3]),
+        Tier3RoleBuckets(wfm_pool[:1], wfm_pool[1:3]),
+    )
 
-    lines.append("")
-    lines.append("*WFM / WFC*")
-    if wfm_b.primary:
-        for it in wfm_b.primary:
-            lines.extend(
-                _format_tier3_person_line(
-                    it,
-                    why_fn=lambda r, v, rec, sk: _short_why_role_line(r, v, rec, sk, "WFM/WFC", new_pw=npw),
-                    project_staffing_rows=project_staffing_rows,
-                )
-            )
-    else:
-        lines.append("• _No pickable WFM/WFC rows in this slice._")
-    if wfm_b.alternate:
-        lines.append("_Alternates (next in rank):_")
-        lines.extend(
-            _format_tier3_alternate_bullets(wfm_b.alternate, project_staffing_rows=project_staffing_rows, new_pw=npw)
-        )
 
-    return "\n".join(lines)
+def _tier2_bucket_map(
+    scored: list[tuple[dict[str, Any], CapacityVerdict, StaffingRecord | None, int, str | None]],
+    *,
+    sese_path: bool,
+) -> dict[str, Tier3RoleBuckets]:
+    pickable_scored = [it for it in scored if _is_pickable_tuple(it)]
+    so_pool = sorted(
+        [it for it in pickable_scored if project_role_norm(it[0]) in frozenset({"dpm", "soe"})],
+        key=_scored_tuple_sort_key,
+    )
+    if sese_path:
+        return {"SoE/DPM (SO)": Tier3RoleBuckets(so_pool[:1], so_pool[1:3])}
+    wfm_pool = sorted(
+        [it for it in pickable_scored if project_role_norm(it[0]) == "wfm"],
+        key=_scored_tuple_sort_key,
+    )
+    return {
+        "SoE/DPM (SO)": Tier3RoleBuckets(so_pool[:1], so_pool[1:3]),
+        "WFM": Tier3RoleBuckets(wfm_pool[:1], wfm_pool[1:3]),
+    }
+
+
+def _stage_short(raw: str) -> str:
+    key = (raw or "").strip().lower().replace(" ", "_")
+    return _STAGE_SHORT.get(key, key.replace("_", "-"))
+
+
+def _truncate_project_name(name: str, max_len: int = 25) -> str:
+    base = name.strip()
+    for frag in ("Studio", "Data Collection", "Orchestration Agents"):
+        base = base.replace(frag, "")
+    base = " ".join(base.split()).strip() or "?"
+    if len(base) <= max_len:
+        return base
+    return base[: max_len - 1].rstrip() + "…"
+
+
+def _risk_inline(crs: tuple[CapacityRow, ...]) -> str:
+    worst: CapacityRow | None = None
+    worst_rank = 99
+    for cr in crs:
+        stat = (cr.status or "").strip().upper()
+        if stat not in {"BEHIND", "AT_RISK"}:
+            continue
+        rk = 0 if stat == "BEHIND" else 1
+        if rk < worst_rank:
+            worst_rank = rk
+            worst = cr
+    if worst is None:
+        return ""
+    st = (worst.status or "").strip().upper()
+    return f" ⚠️ {st} {_stage_short(worst.stage)}"
+
+
+def _role_short_label(pr: str) -> str:
+    pl = (pr or "").strip().lower()
+    return {
+        "dpm": "DPM",
+        "soe": "SoE",
+        "wfm": "WFM",
+        "qm": "QM",
+        "se": "SE",
+    }.get(pl, pl.upper() or "?")
+
+
+def _display_name_parts(row: dict[str, Any], rec: StaffingRecord | None) -> tuple[str, str]:
+    nm_row = name_value(row)
+    src = (rec.name if rec and rec.name.strip() else nm_row) or nm_row
+    if re.search(r"\(external\)\s*$", src, flags=re.I):
+        base = re.sub(r"\s*\(external\)\s*$", "", src, flags=re.I).strip()
+        return base or nm_row, " (ext)"
+    return nm_row, ""
+
+
+def _compact_projects_tail(crs: tuple[CapacityRow, ...]) -> str:
+    if not crs:
+        return ""
+    parts: list[str] = []
+    for cr in crs[:3]:
+        pname = _truncate_project_name(cr.project_name or cr.project_id or "?")
+        tier_bit = (cr.tier or "").replace("Tier ", "T").strip() or "T?"
+        st_short = _stage_short(cr.stage or "")
+        stat_u = (cr.status or "").strip().upper()
+        suffix = ""
+        if stat_u and stat_u != "ON_TRACK":
+            suffix = f", {stat_u}"
+        parts.append(f"{pname} ({tier_bit} {st_short}{suffix})")
+    return " · ".join(parts)
+
+
+def _person_lines_slim(
+    it: tuple[dict[str, Any], CapacityVerdict, StaffingRecord | None, int, str | None],
+    *,
+    new_pw: float,
+) -> list[str]:
+    r, verdict, rec, _sk, _gate_reason = it
+    cu = verdict.capacity_used
+    after = cu + new_pw if new_pw > 0 else cu
+    pr = project_role_norm(r) or "?"
+    role_label = _role_short_label(pr)
+    base_name, ext_suf = _display_name_parts(r, rec)
+    soft = " [SOFT]" if verdict.is_soft else ""
+    crs = tuple(r.get("_capacity_rows") or ())
+    risk = _risk_inline(crs)
+    band = verdict.band.value
+    body = f"• *{base_name}{ext_suf}* · {role_label} · `{cu:.2f} → {after:.2f}` · {band}{soft}{risk}"
+    out = [body]
+    compact = _compact_projects_tail(crs)
+    if compact:
+        out.append(f"   _{compact}_")
+    return out
+
+
+def _slot_section_md(
+    slot_label: str,
+    bucket: Tier3RoleBuckets,
+    *,
+    new_pw: float,
+) -> tuple[str, list[str]]:
+    header_key = SLOT_TO_SECTION_HEADER.get(slot_label, slot_label)
+    risks: list[str] = []
+    lines: list[str] = [f"*{header_key}*"]
+    if bucket.primary:
+        lines.extend(_person_lines_slim(bucket.primary[0], new_pw=new_pw))
+    else:
+        lines.append("_None available — see Risks below._")
+        risks.append(f"No pickable candidate for *{header_key}*.")
+    if bucket.alternate:
+        lines.append("")
+        lines.append("_Alternates:_")
+        for it in bucket.alternate:
+            lines.extend(_person_lines_slim(it, new_pw=new_pw))
+    return "\n".join(lines), risks
+
+
+def _bucket_map_for_tier(
+    tier: int,
+    *,
+    sese_path: bool,
+    scored: list[tuple[dict[str, Any], CapacityVerdict, StaffingRecord | None, int, str | None]],
+    project_staffing_rows: list[dict[str, Any]] | None,
+    decision_cfg: Mapping[str, Any],
+) -> dict[str, Tier3RoleBuckets]:
+    if tier == 1:
+        so_b, wfm_b = _tier1_team_slices(scored)
+        return {"DPM/WFM (SO)": so_b, "WFM": wfm_b}
+    if tier == 2:
+        return _tier2_bucket_map(scored, sese_path=sese_path)
+    if tier == 3:
+        so_b, soe_b, wfm_b = _tier3_team_slices(
+            scored,
+            project_staffing_rows=project_staffing_rows,
+            decision_cfg=decision_cfg,
+        )
+        return {"SSoE/DPM (SO)": so_b, "SoE": soe_b, "WFM": wfm_b}
+    so_b, soe_b, wfm_b, se_b = _tier4_team_slices(
+        scored,
+        project_staffing_rows=project_staffing_rows,
+        decision_cfg=decision_cfg,
+    )
+    return {"SSoE/DPM (SO)": so_b, "SoE": soe_b, "WFM": wfm_b, "SE": se_b}
+
+
+def _build_grouped_recommendation_md(
+    *,
+    tier: int,
+    sese_path: bool,
+    scored: list[tuple[dict[str, Any], CapacityVerdict, StaffingRecord | None, int, str | None]],
+    decision_cfg: Mapping[str, Any],
+    project_staffing_rows: Optional[list[dict[str, Any]]],
+    new_pw: float,
+) -> str:
+    slots = team_template_for(tier, sese_path=sese_path)
+    bucket_map = _bucket_map_for_tier(
+        tier,
+        sese_path=sese_path,
+        scored=scored,
+        project_staffing_rows=project_staffing_rows,
+        decision_cfg=decision_cfg,
+    )
+    sections: list[str] = []
+    risks: list[str] = []
+    for slot in slots:
+        sec_md, rs = _slot_section_md(slot, bucket_map[slot], new_pw=new_pw)
+        sections.append(sec_md)
+        risks.extend(rs)
+    body = "\n\n".join(sections)
+    if risks:
+        body += "\n\n*Risks / open questions*\n" + "\n".join(f"• {r}" for r in risks)
+    return body
 
 
 def pickable_recommendation_rows(
@@ -525,8 +545,9 @@ def pickable_recommendation_rows(
     staffing_by_email: Optional[dict[str, StaffingRecord]] = None,
     limit: int = 4,
     project_staffing_rows: Optional[list[dict[str, Any]]] = None,
+    sese_path: bool = False,
 ) -> list[dict[str, Any]]:
-    """Capacity rows for top recommended people (same order as Slack list / Tier 3 team blocks)."""
+    """Capacity rows for top recommended people (same order as Slack sections)."""
     tags = project_type_tags or []
     staffing = staffing_by_email if staffing_by_email is not None else load_staffing_records()
     npw = default_new_project_weight(decision_cfg, tier)
@@ -546,32 +567,30 @@ def pickable_recommendation_rows(
         project_staffing_rows=project_staffing_rows,
         new_project_weight=npw,
     )
-    if tier == 3:
-        so_b, soe_b, wfm_b = _tier3_team_slices(
-            scored,
-            project_staffing_rows=project_staffing_rows,
-            decision_cfg=decision_cfg,
-        )
-        ordered_rows: list[dict[str, Any]] = []
-        seen: set[str] = set()
-        for it in (
-            so_b.primary
-            + soe_b.primary
-            + wfm_b.primary
-            + so_b.alternate
-            + soe_b.alternate
-            + wfm_b.alternate
-        ):
+    if tier not in (1, 2, 3, 4):
+        pickable = [it for it in scored if _is_pickable_tuple(it)]
+        return [it[0] for it in pickable[:limit]]
+
+    bucket_map = _bucket_map_for_tier(
+        tier,
+        sese_path=sese_path,
+        scored=scored,
+        project_staffing_rows=project_staffing_rows,
+        decision_cfg=decision_cfg,
+    )
+    slots = team_template_for(tier, sese_path=sese_path)
+    ordered_rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for slot in slots:
+        b = bucket_map[slot]
+        for it in b.primary + b.alternate:
             em = (email_value(it[0]) or "").strip().lower()
             if em:
                 if em in seen:
                     continue
                 seen.add(em)
             ordered_rows.append(it[0])
-        return ordered_rows[:limit]
-
-    pickable = [it for it in scored if _is_pickable_tuple(it)]
-    return [it[0] for it in pickable[:limit]]
+    return ordered_rows[:limit]
 
 
 def build_project_recommendation_markdown(
@@ -584,17 +603,17 @@ def build_project_recommendation_markdown(
     staffing_by_email: Optional[dict[str, StaffingRecord]] = None,
     detail: Literal["minimal", "standard", "full"] = "standard",
     project_staffing_rows: Optional[list[dict[str, Any]]] = None,
+    sese_path: bool = False,
 ) -> str:
     """
-    Primary + backup with People & Tags CSV (email), Comment / SO Status / Skills.
+    Role-grouped primary + alternates (Capacity v2 + People & Tags ranking).
 
-    *minimal* — top candidates and a short rationale only; no exclusion lists.
-
-    *project_staffing_rows* — optional snapshot from ``sql/project_staffing.sql`` (Databricks).
+    ``detail`` is kept for API compatibility; rendering is always the slim grouped layout.
+    ``project_staffing_rows`` feeds tier 3/4 parallel-order caps only (not duplicate Slack tables).
     """
+    _ = detail
     tags = project_type_tags or []
     staffing = staffing_by_email if staffing_by_email is not None else load_staffing_records()
-    minimal = detail == "minimal"
     npw = default_new_project_weight(decision_cfg, tier)
 
     if not rows:
@@ -610,12 +629,12 @@ def build_project_recommendation_markdown(
     if tier is None:
         return (
             "*Recommendation: who can take the project*\n"
-            "_Set Tier in Phase B (Node 1) — without Tier, automatic Node 2 role filtering does not apply._"
+            "_Set Tier in Phase B (Node 1) — without Tier, automatic role filtering does not apply._"
         )
 
     if tier not in (1, 2, 3, 4):
         return (
-            f"*Recommendation: who can take the project*\n"
+            "*Recommendation: who can take the project*\n"
             f"_Tier {tier} is outside 1–4 — fix the classification in Phase B._"
         )
 
@@ -630,8 +649,6 @@ def build_project_recommendation_markdown(
             "_No rows with matching roles for this Tier in Capacity snapshot — check SQL or data._"
         )
 
-    csv_loaded = bool(staffing)
-
     scored = _staffing_full_scored(
         prepared,
         tier=tier,
@@ -642,161 +659,11 @@ def build_project_recommendation_markdown(
         project_staffing_rows=project_staffing_rows,
         new_project_weight=npw,
     )
-    pickable = [it for it in scored if _is_pickable_tuple(it)]
-
-    def _fmt(
-        r: dict[str, Any],
-        verdict: CapacityVerdict,
-        rec: StaffingRecord | None,
-        ps_reason: str | None = None,
-    ) -> str:
-        pr = project_role_norm(r) or "?"
-        base = f"*`{pr}`*, {_cap_line(verdict, npw)} `{verdict.band.value}`"
-        base += _soft_suffix(verdict)
-        base += _pto_hint(r, verdict)
-        crs = tuple(r.get("_capacity_rows") or ())
-        base += " — _" + format_capacity_projects_line(crs) + "_"
-        if rec:
-            so = (rec.so_status or "—").strip() or "—"
-            sm = skill_match_score(rec, tags, summary)
-            sk_hint = f"skills match ≈ {sm}" if (tags or summary) and sm else ""
-            extra = f" _SO Status: {so}_"
-            if sk_hint:
-                extra += f" _{sk_hint}_"
-            if not minimal and (rec.comment or "").strip():
-                extra += f" _Comment: {(rec.comment.strip())[:120]}{'…' if len(rec.comment.strip()) > 120 else ''}_"
-            base = base + extra
-        if ps_reason == "ps_scoping_discovery_only":
-            base += f" _({gate_reason_label(ps_reason)})_"
-        return base
-
-    def _line(
-        r: dict[str, Any],
-        verdict: CapacityVerdict,
-        rec: StaffingRecord | None,
-        ps_reason: str | None = None,
-    ) -> str:
-        return f"• *{name_value(r)}* — {_fmt(r, verdict, rec, ps_reason)}"
-
-    if tier == 3:
-        body = _build_tier3_team_markdown(
-            scored,
-            minimal=minimal,
-            csv_loaded=csv_loaded,
-            project_staffing_rows=project_staffing_rows,
-            decision_cfg=decision_cfg,
-            project_type_tags=tags,
-            summary=summary,
-            new_project_weight=npw,
-        )
-        if minimal:
-            return body
-        lines = [body]
-    else:
-        if minimal:
-            lines = [
-                "*Recommendation*",
-                _minimal_team_skills_why(tier, tags, summary),
-            ]
-        else:
-            lines = [
-                "*Recommendation: who can take the project* _(Tier + Capacity v2 + People & Tags CSV by email)_",
-            ]
-            if csv_loaded:
-                lines.append("_People & Tags table loaded; Comment / SO Status / Skills applied._")
-            else:
-                lines.append(
-                    "_CSV file not found (`config/staffing_csv.yaml` / `STAFFING_PEOPLE_CSV_PATH`) — Databricks load only._"
-                )
-
-        if pickable:
-            it0 = pickable[0]
-            r0, ver0, rec0, _, ps0 = it0[0], it0[1], it0[2], it0[3], it0[4]
-            lines.append(f"• *First pick:* *{name_value(r0)}* — {_fmt(r0, ver0, rec0, ps0)}")
-            rest = [x for x in pickable[1:4]]
-            if rest:
-                lines.append("*Alternates:*")
-                for it in rest:
-                    lines.append(_line(it[0], it[1], it[2], it[4]))
-        else:
-            if minimal:
-                lines.append(
-                    "_No FREE/PARTIAL candidates eligible for a new project with confirmed SO where needed — check CSV (email), Tier, or escalate._"
-                )
-            else:
-                lines.append("_No FREE/PARTIAL eligible candidates without CSV blocks — see exclusions below or Node 5._")
-
-        if minimal:
-            return "\n".join(lines)
-
-    blocked_names = [(name_value(r), rec.comment[:80] if rec else "") for r, _v, rec, _, reas in scored if reas == "blocked_comment"]
-    if blocked_names:
-        lines.append("*Excluded by Comment (do not staff):*")
-        for nm, c in blocked_names[:15]:
-            lines.append(f"• *{nm}* — `…{c}…`" if c else f"• *{nm}*")
-
-    not_so_names = [name_value(r) for r, _v, rec, _, reas in scored if reas == "not_so"]
-    if not_so_names:
-        lines.append("*Not suitable as SO / responsible (not SO / not can be SO in table):*")
-        for nm in not_so_names[:20]:
-            lines.append(f"• {nm}")
-        if len(not_so_names) > 20:
-            lines.append(f"… _{len(not_so_names) - 20} more_")
-
-    no_csv_names = [name_value(r) for r, _v, rec, _, reas in scored if reas == "no_csv"]
-    if no_csv_names:
-        lines.append("*No CSV row for email — SO for SoE/DPM not confirmed:*")
-        for nm in no_csv_names[:20]:
-            lines.append(f"• {nm}")
-
-    seen_pto: set[str] = set()
-    pto_excluded: list[tuple[str, Any, CapacityVerdict]] = []
-    for r in prepared:
-        if not _verdict(r).on_pto_today:
-            continue
-        nm = name_value(r)
-        key = (email_value(r) or nm).strip().lower()
-        if key in seen_pto:
-            continue
-        seen_pto.add(key)
-        pto_excluded.append((nm, r.get("_pto_today_end"), _verdict(r)))
-    if pto_excluded:
-        lines.append("*Excluded — currently on PTO:*")
-        for nm, end, _v in pto_excluded[:25]:
-            tail = f" _(through {end})_" if end else ""
-            lines.append(f"• *{nm}*{tail}")
-        if len(pto_excluded) > 25:
-            lines.append(f"… _{len(pto_excluded) - 25} more_")
-
-    ps_gates = [
-        (name_value(r), reas)
-        for r, _v, rec, _, reas in scored
-        if reas and str(reas).startswith("ps_") and reas != "ps_scoping_discovery_only"
-    ]
-    if ps_gates:
-        lines.append("*Project snapshot staffing gates (excluded from picks):*")
-        for nm, reas in ps_gates[:25]:
-            lines.append(f"• *{nm}* — _{gate_reason_label(reas)}_")
-        if len(ps_gates) > 25:
-            lines.append(f"… _{len(ps_gates) - 25} more_")
-
-    cap_blocked = [
-        (name_value(r), _verdict(r))
-        for r in candidates
-        if not _verdict(r).eligible_for_new
-        and _verdict(r).ineligible_reason
-        in (IneligibleReason.CAPACITY_OVERFLOW, IneligibleReason.MAX_PROJECTS_CAP, IneligibleReason.IN_HARD_EXCLUDE)
-    ]
-    if cap_blocked:
-        lines.append("*Excluded — capacity / hard rules:*")
-        for nm, ver in cap_blocked[:25]:
-            lines.append(f"• *{nm}* — `{ver.ineligible_reason.value}` (cap *{ver.capacity_used:.2f}*, band `{ver.band.value}`)")
-        if len(cap_blocked) > 25:
-            lines.append(f"… _{len(cap_blocked) - 25} more_")
-
-    busy_only = [r for r, ver, _, _, reas in scored if ver.band == Band.AT_CAP and reas is None]
-    if not pickable and busy_only and not pto_excluded:
-        lines.append("_All candidates are AT_CAP — escalate / Node 5._")
-
-    lines.append("_Summary: Capacity v2 + PTO from SQL; CSV — staffing rules; cross-check with calendar._")
-    return "\n".join(lines)
+    return _build_grouped_recommendation_md(
+        tier=tier,
+        sese_path=sese_path,
+        scored=scored,
+        decision_cfg=decision_cfg,
+        project_staffing_rows=project_staffing_rows,
+        new_pw=npw,
+    )

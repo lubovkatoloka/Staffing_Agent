@@ -1,0 +1,3 @@
+Microsoft Copilot urgent request for ground truth + judge result validation on 948 multi-turn QA conversations.
+2-week timeline with hard May 22 deadline, $10k managed services.
+Need immediate staffing: Tier 2 · SoE/DPM + WFM for QA validation.

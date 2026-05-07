@@ -8,7 +8,6 @@ from typing import Any
 
 from dotenv import load_dotenv
 
-from staffing_agent.decision.node2_rules import node2_slack_markdown
 from staffing_agent.extraction import extract_request_spec
 from staffing_agent.intent import is_team_capacity_query, single_role_focus_from_thread
 from staffing_agent.models.request_spec import RequestSpec
@@ -50,23 +49,18 @@ def _node3_markdown_when_no_tier() -> str:
     )
 
 
-def _node2_markdown_for_reply(
-    spec: RequestSpec,
-    *,
-    capacity_mode: bool,
-    role_focus: bool,
-) -> str:
-    if capacity_mode:
-        return (
-            "*Node 2 — candidate pool (Decision Logic)*\n"
-            "_Для снимка загрузки tier не обязателен — ниже списки по ролям из Occupation + snapshot gates._"
-        )
-    if role_focus:
-        return (
-            "*Node 2 — candidate pool*\n"
-            "_Узкий список по одной роли. Полная команда (все слоты) — добавьте tier/scope в тред или запросите *team capacity*._"
-        )
-    return node2_slack_markdown(spec.tier, spec.project_type_tags)
+def _public_spec_lede(spec: RequestSpec) -> str:
+    """Short Slack-visible preamble: tier+judge line, else first line of summary only."""
+    th = spec.tier_slack_header_mrkdwn()
+    if th:
+        return th
+    summ = (spec.summary or "").strip()
+    if not summ:
+        return ""
+    first_line = summ.split("\n", 1)[0].strip()
+    if len(first_line) > 280:
+        return first_line[:277] + "…"
+    return first_line
 
 
 def _resolve_node3_body(
@@ -86,6 +80,7 @@ def _resolve_node3_body(
         tier=spec.tier,
         project_type_tags=spec.project_type_tags,
         summary=spec.summary,
+        sese_path=spec.sese_path,
     )
 
 
@@ -101,31 +96,29 @@ def build_slack_mention_reply(
 ) -> str:
     """
     Single place for Socket Mode + paste: shape depends on STAFFING_AGENT_REPLY_STYLE.
-    minimal — short summary + recommendation only; full — Phase A + JSON + Nodes 2–3 + Phase C.
+    minimal — tier+judge line + recommendation (no Node 2 prose); full — Phase A + JSON + Node 3 + Phase C.
 
     ``thread_plain`` / ``trigger_message_text`` — для маршрутизации *team capacity* без tier (см. ``intent``).
     """
     tp = (thread_plain or "").strip() or format_thread_preview(messages)
     trig = trigger_message_text
-    capacity_mode = is_team_capacity_query(tp, trigger_message_text=trig)
-    role_focus = bool(single_role_focus_from_thread(tp)) and spec.tier is None and not capacity_mode
 
     n3 = _resolve_node3_body(spec, thread_plain=tp, trigger_message_text=trig)
-    node2 = _node2_markdown_for_reply(spec, capacity_mode=capacity_mode, role_focus=role_focus)
+    lede = _public_spec_lede(spec)
     rs = reply_style()
-    if rs == "minimal":
-        reply = spec.to_slack_brief() + "\n\n" + node2 + "\n\n" + n3
-    elif rs == "compact":
-        reply = spec.to_slack_brief() + "\n\n" + node2 + "\n\n" + n3
+
+    tail_parts = [p for p in (lede, n3) if p]
+    core = "\n\n".join(tail_parts)
+
+    if rs == "minimal" or rs == "compact":
+        reply = core
     else:
         reply = (
             build_context_reply(messages, previews=previews, google_previews=google_previews)
             + f"\n\n*Phase B — extraction (Node 1)* _(source: {extraction_src_label})_\n"
             + spec.to_slack_block()
             + "\n\n"
-            + node2
-            + "\n\n"
-            + n3
+            + core
             + "\n\n"
             + build_phase_c_section()
         )

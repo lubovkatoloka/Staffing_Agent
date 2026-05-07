@@ -365,18 +365,18 @@ def build_team_capacity_markdown(
             "_Slot counts use the same snapshot gate tier as recommendations (Tier 1 roles → tier 1; "
             "SO → tier 2; SoE / WFM for Tier 3 pair → tier 3; Tier 4 row → tier 4)._"
         )
-    lines.append(f"• *Tier 1 — scoping* (DPM + WFM): up to **{t1_scoping}** parallel tracks.")
+    lines.append(f"• *Tier 1 — scoping* (DPM + WFM): up to *{t1_scoping}* parallel tracks.")
     lines.append(
-        f"• *Tier 1 — full loop* (+ QM in Node 2): up to **{t1_full}** when QM is in FREE."
+        f"• *Tier 1 — full loop* (+ QM in Node 2): up to *{t1_full}* when QM is in FREE."
     )
     lines.append(
-        f"• *Tier 2 — full project* (1 SO SoE/DPM with SO in the table): up to **{t2_slots}** parallel projects."
+        f"• *Tier 2 — full project* (1 SO SoE/DPM with SO in the table): up to *{t2_slots}* parallel projects."
     )
     lines.append(
-        f"• *Tier 3* (SoE + WFM, no domain): up to **{t3_slots}** SoE+WFM pairs in FREE."
+        f"• *Tier 3* (SoE + WFM, no domain): up to *{t3_slots}* SoE+WFM pairs in FREE."
     )
     lines.append(
-        f"• *Tier 4* (conservative, no Commercial): **≤ {t4_slots}** — confirm manually with Commercial."
+        f"• *Tier 4* (conservative, no Commercial): ≤ {t4_slots} — confirm manually with Commercial."
     )
 
     return "\n".join(lines)

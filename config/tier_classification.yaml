@@ -122,6 +122,10 @@ classification_rules: |
 output_requirements: |
   Always set **`thread_kind`** to one of: `deal_notification`, `staffing_request`, `capacity_question`, `unclear`.
 
+  Always fill **`judge`**: a single line, max **80 characters**, format `<client> <project_type> · <key_signal>` (no SCQA prose, no Tier explanations — those belong in `tier_rationale` only). Examples: `Microsoft Copilot QA validation · 948 turns · hard May 22`; `Shopify Sidekick eval · agentic · 6-week pilot`.
+
+  Set **`sese_path`** to **true** only when the thread clearly describes the Tier 2 **SeSe** lean staffing path (SO-only team); otherwise **false**.
+
   If the thread **requests staffing**, **clear project resourcing**, or matches **deal + availability ping** (see classification_rules): fill `tier_rationale` (1–4 sentences), set `complexity_class` to "S", "M", or "L", and set `tier` to 1–4.
   If the thread is **not** a staffing request **and** not a deal+availability ping: set `tier` to null, `complexity_class` to null; `tier_rationale` should explain why; `summary` describes the thread; `confidence` reflects uncertainty (lower when not staffing).
   If ambiguous: prefer `tier` null and explain in `notes` what is missing (e.g. Tier, roles, timeline); keep `thread_kind` honest — **except** do not use null tier when the thread clearly pairs deal context with `who_is_available` / team capacity language.

@@ -69,13 +69,12 @@ def test_tier2_primary_is_free_lowest_occupation():
             cfg,
             2,
             _proj("p2", "B", tier="Tier 2"),
-            _proj("p3", "C", tier="Tier 2"),
         ),
     ]
     text = build_project_recommendation_markdown(
         rows, tier=2, decision_cfg=cfg, staffing_by_email=staffing
     )
-    assert "First pick" in text
+    assert "*SO Recommendations*" in text
     assert "FirstPick" in text
     idx_first = text.index("FirstPick")
     idx_second = text.index("SecondFree")
@@ -122,27 +121,39 @@ def test_tier3_shows_on_active_orders_when_snapshot_provided():
         detail="minimal",
         project_staffing_rows=ps_rows,
     )
-    assert "_On active orders:_" in text
-    assert "Northwind Pilot" in text
-    assert "Fabrikam Ops" in text
+    assert "Dpm Lead" in text
+    assert "Wfm Ops" in text
 
 
-def test_tier3_same_person_not_listed_under_so_and_soe():
-    """Node 4: distinct seats — anyone in the SO shortlist is omitted from the SoE list."""
+def test_tier3_so_primary_email_excluded_from_soe_slice():
+    """SO slot winner email never repeats under SoE Recommendations (primary-only exclusion rule)."""
     cfg = load_decision_config()
     staffing = {
-        "a@t.com": _so("a@t.com"),
-        "b@t.com": _so("b@t.com"),
+        "charlie@t.com": _so("charlie@t.com"),
+        "eddie@t.com": _so("eddie@t.com"),
+        "dana@t.com": _so("dana@t.com"),
     }
     rows = [
-        _person("a@t.com", "Amy DPM", "dpm", cfg, 3, _proj("p1", "P", tier="Tier 2")),
-        _person("b@t.com", "Bob Soe", "soe", cfg, 3, _proj("p2", "Q", tier="Tier 3")),
+        _person("charlie@t.com", "Charlie Dpm", "dpm", cfg, 3, _proj("p1", "Light", tier="Tier 3")),
+        _person(
+            "eddie@t.com",
+            "Eddie Dpm",
+            "dpm",
+            cfg,
+            3,
+            _proj("e1", "Heavy A", tier="Tier 3"),
+            _proj("e2", "Heavy B", tier="Tier 3"),
+        ),
+        _person("dana@t.com", "Dana Soe", "soe", cfg, 3, _proj("d1", "SoeProj", tier="Tier 3")),
     ]
     text = build_project_recommendation_markdown(
         rows, tier=3, decision_cfg=cfg, staffing_by_email=staffing, detail="minimal"
     )
-    _, after_soe_header = text.split("*SoE*", 1)
-    assert "Bob Soe" not in after_soe_header
+    assert "*SO Recommendations*" in text and "*SoE Recommendations*" in text
+    _, after_soe_header = text.split("*SoE Recommendations*", 1)
+    assert "Charlie Dpm" not in after_soe_header
+    assert "Eddie Dpm" not in after_soe_header
+    assert "Dana Soe" in after_soe_header
 
 
 def test_tier3_soe_skips_when_too_many_parallel_orders():
@@ -175,7 +186,7 @@ def test_tier3_soe_skips_when_too_many_parallel_orders():
         detail="minimal",
         project_staffing_rows=ps_rows,
     )
-    soe_seg = text.split("*SoE*", 1)[1].split("*WFM / WFC*", 1)[0]
+    soe_seg = text.split("*SoE Recommendations*", 1)[1].split("*WFM Recommendations*", 1)[0]
     assert "Busy SoE" not in soe_seg
     assert "Free SoE" in soe_seg
 
@@ -200,7 +211,7 @@ def test_tier3_so_slot_skips_when_too_many_active_orders():
         detail="minimal",
         project_staffing_rows=ps_rows,
     )
-    so_seg = text.split("*SO (SSoE or DPM)*", 1)[1].split("*SoE*", 1)[0]
+    so_seg = text.split("*SO Recommendations*", 1)[1].split("*SoE Recommendations*", 1)[0]
     assert "Heavy DPM" not in so_seg
     assert "Light DPM" in so_seg
 
@@ -220,10 +231,10 @@ def test_tier3_has_so_soe_wfm_sections():
     text = build_project_recommendation_markdown(
         rows, tier=3, decision_cfg=cfg, staffing_by_email=staffing, detail="minimal"
     )
-    assert "*SO (SSoE or DPM)*" in text
-    assert "*SoE*" in text
-    assert "*WFM / WFC*" in text
-    assert "_Why:_" in text
+    assert "*SO Recommendations*" in text
+    assert "*SoE Recommendations*" in text
+    assert "*WFM Recommendations*" in text
+    assert "_Why:_" not in text
     assert "Dpm" in text or "Soe" in text
 
 
@@ -249,9 +260,10 @@ def test_executor_excluded_from_pick():
         _person("ok@test.com", "Ok", "soe", cfg, 2, _proj("o", "O", tier="Tier 2")),
     ]
     text = build_project_recommendation_markdown(rows, tier=2, decision_cfg=cfg, staffing_by_email=staffing)
-    assert "First pick" in text
-    assert "Ok" in text
-    assert "not SO" in text or "Executor" in text or "responsible" in text
+    assert "*SO Recommendations*" in text
+    so_seg = text.split("*SO Recommendations*", 1)[1].split("*WFM Recommendations*", 1)[0]
+    assert "Ok" in so_seg
+    assert "Exec" not in so_seg
 
 
 def test_skill_ranking_with_tags():
@@ -273,7 +285,6 @@ def test_skill_ranking_with_tags():
         summary="TTS eval",
     )
     assert "A" in text
-    ia = text.index("First pick")
-    rest = text[ia : ia + 200]
-    assert "A" in rest or "a@" in text
+    so_seg = text.split("*SO Recommendations*", 1)[1].split("*WFM Recommendations*", 1)[0]
+    assert so_seg.index("A") < so_seg.index("B")
 

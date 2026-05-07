@@ -35,7 +35,19 @@ class RequestSpec(BaseModel):
         ),
     )
     project_type_tags: List[str] = Field(default_factory=list)
-    summary: str = Field("", description="One short paragraph")
+    judge: str = Field(
+        "",
+        max_length=80,
+        description=(
+            "Single-line request label for Slack (≤80 chars): "
+            "`<client> <project_type> · <key_signal>` — no SCQA prose."
+        ),
+    )
+    sese_path: bool = Field(
+        False,
+        description="Tier 2 SeSe lean team (SO-only template) when applicable.",
+    )
+    summary: str = Field("", description="One short paragraph (internal / logs; not shown in slim Slack replies)")
     project_start_hint: Optional[str] = Field(
         None, description="ISO date or free-text timing hint if any"
     )
@@ -60,8 +72,21 @@ class RequestSpec(BaseModel):
 
         return "```json\n" + json.dumps(data, ensure_ascii=False, indent=2) + "\n```"
 
+    def tier_slack_header_mrkdwn(self) -> str | None:
+        """CR-4 tier line for Slack: tier · complexity · staffing template — judge."""
+        from staffing_agent.decision.team_template import team_template_string
+
+        if self.tier is None:
+            return None
+        cc = self.complexity_class or "?"
+        team_str = team_template_string(self.tier, sese_path=self.sese_path)
+        judge = (self.judge or "").strip()
+        if judge:
+            return f"*Tier {self.tier} · {cc}: {team_str}* — {judge}"
+        return f"*Tier {self.tier} · {cc}: {team_str}*"
+
     def to_slack_brief(self) -> str:
-        """Short human-readable summary for Slack (no JSON). Omits internal labels like thread_kind for public replies."""
+        """Legacy brief (full style). Slim @mention replies use `tier_slack_header_mrkdwn()` instead."""
         parts: list[str] = []
         if self.tier is not None:
             tier_line = f"*Tier {self.tier}*"

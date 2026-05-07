@@ -184,6 +184,23 @@ def _normalize_llm_spec_dict(data: dict[str, Any]) -> dict[str, Any]:
         out["project_type_tags"] = []
     else:
         out["project_type_tags"] = [str(x).strip() for x in tags if str(x).strip()]
+    j = out.get("judge")
+    if isinstance(j, str):
+        j = j.strip()
+        if len(j) > 80:
+            j = j[:77] + "…"
+        out["judge"] = j
+    elif j is None:
+        out["judge"] = ""
+    else:
+        out["judge"] = str(j).strip()[:80]
+    sp = out.get("sese_path")
+    if isinstance(sp, bool):
+        out["sese_path"] = sp
+    elif sp is None:
+        out["sese_path"] = False
+    else:
+        out["sese_path"] = str(sp).strip().lower() in ("1", "true", "yes", "y")
     return out
 
 
@@ -273,6 +290,7 @@ def _mock_spec() -> RequestSpec:
         complexity_class="S",
         tier_rationale="Mock: default Tier 2 placeholder.",
         project_type_tags=[],
+        judge="Microsoft Copilot QA validation · 948 turns · hard May 22",
         summary=(
             f"Mock extraction (no Anthropic call). Decision-logic config v{ver}. "
             "Set ANTHROPIC_API_KEY and ensure STAFFING_AGENT_MOCK_LLM is not 1 for real Opus."
@@ -326,6 +344,15 @@ def extract_request_spec(thread_text: str, notion_excerpt: str = "") -> tuple[Re
         "When tier is set and unclear, still extract product signals (evals, languages, call, etc.); "
         "Node 3 lists people by role from Databricks when SQL is configured. "
         "Extract project type tags when they help staffing (short labels: e.g. Evals, TTS, multilingual); "
+        "tags are for internal skill matching — do not paste tag lists into `judge`. "
+        "Generate a single `judge` line, max 80 characters, format: `<client> <project_type> · <key_signal>`. Examples: "
+        "`Microsoft Copilot QA validation · 948 turns · hard May 22`; "
+        "`Shopify Sidekick eval · agentic · 6-week pilot`; "
+        "`Amazon Lab126 video collection · multimodal · ramping`. "
+        "Do NOT put Situation/Complication/Answer prose in `judge`. Do NOT explain what Tier N means in `judge`. "
+        "Put SCQA-style reasoning only in `tier_rationale` / `notes` (not shown in slim Slack). "
+        "Set `sese_path` true only when the thread clearly describes the Tier 2 SeSe external-projects lean staffing path; "
+        "otherwise false. "
         "when tier is null, omit or minimize tags. "
         "Output a single JSON object matching this JSON Schema (no markdown, no commentary):\n"
         f"{json.dumps(schema, ensure_ascii=False)}"

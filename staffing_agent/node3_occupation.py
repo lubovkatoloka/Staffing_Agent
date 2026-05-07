@@ -46,6 +46,14 @@ MIN_CAPACITY_SQL_LEN = 80
 MIN_OPTIONAL_SQL_LEN = 40
 
 
+def _minimal_slack_error_clip(raw: str, *, max_len: int = 220) -> str:
+    """Single-line, capped snippet for minimal Slack replies (avoid huge CLI OAuth dumps)."""
+    s = " ".join((raw or "").split())
+    if len(s) > max_len:
+        return s[: max_len - 1] + "…"
+    return s
+
+
 def _staffing_stderr(msg: str) -> None:
     print(msg, file=sys.stderr, flush=True)
 
@@ -115,6 +123,7 @@ def node3_slack_markdown(
     tier: Optional[int] = None,
     project_type_tags: Optional[list[str]] = None,
     summary: str = "",
+    sese_path: bool = False,
 ) -> str:
     """Run sql/capacity.sql; return Slack mrkdwn."""
     cfg = load_decision_config()
@@ -197,7 +206,7 @@ def node3_slack_markdown(
     )
     if not ok:
         if minimal:
-            clip = out[:400] + ("…" if len(out) > 400 else "")
+            clip = _minimal_slack_error_clip(out)
             return f"_Capacity query failed:_ `{clip}`"
         lines.append(f"_Capacity query failed:_ `{out[:900]}{'…' if len(out) > 900 else ''}`")
         lines.append("")
@@ -263,18 +272,10 @@ def node3_slack_markdown(
             summary=summary or "",
             detail="minimal" if minimal else "standard",
             project_staffing_rows=project_staffing_snapshot,
+            sese_path=sese_path,
         )
         if minimal:
-            ps = _maybe_project_staffing_markdown(
-                rows_raw,
-                tier=tier,
-                decision_cfg=cfg,
-                project_type_tags=project_type_tags,
-                summary=summary or "",
-                timeout_sec=min(timeout_sec, 180),
-                preloaded_ps_rows=project_staffing_snapshot,
-            )
-            return f"{rec}\n\n{ps}" if ps else rec
+            return rec
 
         def _capacity_table_lines() -> list[str]:
             out: list[str] = []
@@ -324,18 +325,6 @@ def node3_slack_markdown(
             lines.append("")
             lines.extend(_capacity_table_lines())
             lines.append("_Full list — Databricks / `capacity.sql`._")
-            ps_c = _maybe_project_staffing_markdown(
-                rows_raw,
-                tier=tier,
-                decision_cfg=cfg,
-                project_type_tags=project_type_tags,
-                summary=summary or "",
-                timeout_sec=min(timeout_sec, 180),
-                preloaded_ps_rows=project_staffing_snapshot,
-            )
-            if ps_c:
-                lines.append("")
-                lines.append(ps_c)
         else:
             lines.extend(_capacity_table_lines())
             lines.append("")
@@ -352,26 +341,3 @@ def node3_slack_markdown(
         lines.append("\n".join(_followup_block(tier, compact=False)))
 
     return "\n".join(lines)
-
-
-def _maybe_project_staffing_markdown(
-    occupation_rows: list[dict[str, Any]],
-    *,
-    tier: Optional[int],
-    decision_cfg: dict[str, Any],
-    project_type_tags: Optional[list[str]],
-    summary: str,
-    timeout_sec: int,
-    preloaded_ps_rows: Optional[list[dict[str, Any]]] = None,
-) -> str:
-    from staffing_agent.node3_project_staffing import fetch_project_staffing_addon
-
-    return fetch_project_staffing_addon(
-        occupation_rows,
-        tier=tier,
-        decision_cfg=decision_cfg,
-        project_type_tags=project_type_tags or [],
-        summary=summary or "",
-        timeout_sec=timeout_sec,
-        preloaded_ps_rows=preloaded_ps_rows,
-    )
