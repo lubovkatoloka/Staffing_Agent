@@ -11,6 +11,7 @@ from staffing_agent.google_docs_fetch import (
     fetch_google_doc,
     google_doc_id_from_url,
 )
+from staffing_agent.exclusions import notion_auth_token
 from staffing_agent.notion_fetch import fetch_page_preview, notion_page_id_from_url
 
 URL_RE = re.compile(r"https?://[^\s<>\]]+", re.IGNORECASE)
@@ -126,7 +127,7 @@ def gather_notion_previews(
     Each item: {page_id, title, preview, error?}
     """
     urls = collect_urls_from_messages(messages)
-    notion_token = (os.environ.get("NOTION_TOKEN") or "").strip()
+    notion_token = notion_auth_token()
     seen: set[str] = set()
     out: list[dict[str, Any]] = []
     for u in urls:
@@ -140,7 +141,7 @@ def gather_notion_previews(
                     "page_id": nid,
                     "title": "",
                     "preview": "",
-                    "error": "NOTION_TOKEN not set",
+                    "error": "NOTION_AUTH_NOT_SET",
                 }
             )
             continue
@@ -288,10 +289,10 @@ def build_context_reply(
     token_missing_shown = False
     for row in rows:
         nid = row["page_id"]
-        if row.get("error") == "NOTION_TOKEN not set":
+        if row.get("error") == "NOTION_AUTH_NOT_SET":
             if not token_missing_shown:
                 notion_sections.append(
-                    "_Notion:_ links found, but `NOTION_TOKEN` is not set — add integration token to `.env` to fetch page previews."
+                    "_Notion:_ links found, but `NOTION_API_KEY` / `NOTION_TOKEN` is not set — add integration token to `.env` for page previews."
                 )
                 token_missing_shown = True
             continue

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Mapping, Optional
 
 from staffing_agent.databricks_cli import databricks_profile
+from staffing_agent.exclusions import ExclusionUnavailableError
 from staffing_agent.node4_recommendation import pickable_recommendation_rows
 
 _ROOT = Path(__file__).resolve().parent.parent
@@ -268,15 +269,18 @@ def fetch_project_staffing_addon(
         if not ps_rows:
             return ""
 
-    pick_rows = pickable_recommendation_rows(
-        occupation_rows,
-        tier=tier,
-        decision_cfg=decision_cfg,
-        project_type_tags=project_type_tags or [],
-        summary=summary or "",
-        limit=4,
-        project_staffing_rows=ps_rows if tier == 3 else None,
-    )
+    try:
+        pick_rows = pickable_recommendation_rows(
+            occupation_rows,
+            tier=tier,
+            decision_cfg=decision_cfg,
+            project_type_tags=project_type_tags or [],
+            summary=summary or "",
+            limit=4,
+            project_staffing_rows=ps_rows if tier == 3 else None,
+        )
+    except ExclusionUnavailableError:
+        return ""
     seen: set[str] = set()
     names_ordered: list[str] = []
     for r in pick_rows:

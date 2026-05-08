@@ -28,17 +28,30 @@ from staffing_agent.project_staffing_gates import (
     gate_reason_label,
     project_staffing_gate_reason,
 )
+from staffing_agent.exclusions import (
+    ExclusionUnavailableError,
+    format_excluded_comment_block,
+    get_exclusion_store,
+    slack_exclusion_unavailable_message,
+)
 from staffing_agent.staffing_csv import (
     StaffingRecord,
-    comment_blocks_staffing,
     is_so_or_can_be_so,
     load_staffing_records,
-    load_staffing_table_config,
 )
 
 
 def _staffing_stderr(msg: str) -> None:
     print(msg, file=sys.stderr, flush=True)
+
+
+def _team_capacity_required_roles(only_role: Optional[str]) -> frozenset[str]:
+    orl = (only_role or "").strip().lower()
+    if orl == "so":
+        return frozenset({"soe", "dpm"})
+    if orl in ("soe", "dpm", "wfm", "qm", "se"):
+        return frozenset({orl})
+    return frozenset({"soe", "dpm", "wfm", "qm", "se"})
 
 
 def _verdict(row: dict[str, Any]) -> CapacityVerdict:
@@ -62,11 +75,10 @@ def _row_is_freeish(row: dict[str, Any]) -> bool:
 def _row_usable(
     row: dict[str, Any],
     staffing: dict[str, StaffingRecord],
-    st_cfg: Mapping[str, Any],
+    excluded_emails: frozenset[str],
 ) -> bool:
-    em = email_value(row)
-    rec = staffing.get(em) if em else None
-    if rec and comment_blocks_staffing(rec.comment, st_cfg):
+    em = (email_value(row) or "").strip().lower()
+    if em and em in excluded_emails:
         return False
     return True
 
@@ -145,9 +157,13 @@ def build_team_capacity_markdown(
     ``only_role`` — if set to ``so``/``soe``/``dpm``/``wfm``/``qm``, return only that slice (primary + alternates).
     """
     cfg = decision_cfg or load_decision_config()
-    st_cfg = load_staffing_table_config()
     staffing = load_staffing_records()
     csv_loaded = bool(staffing)
+
+    try:
+        exr = get_exclusion_store().get()
+    except ExclusionUnavailableError:
+        return slack_exclusion_unavailable_message(title="Team capacity")
 
     npw = 0.0
     prepared = prepare_rows_for_recommendation(
@@ -155,9 +171,10 @@ def build_team_capacity_markdown(
         decision_cfg=cfg,
         new_project_weight=npw,
         staffing=staffing,
+        excluded_emails=exr.excluded_emails,
     )
 
-    usable = [r for r in prepared if _row_usable(r, staffing, st_cfg)]
+    usable = [r for r in prepared if _row_usable(r, staffing, exr.excluded_emails)]
     if not usable:
         return (
             "*Team capacity*\n"
@@ -270,7 +287,12 @@ def build_team_capacity_markdown(
             "_Narrow ask (no project tier in Phase B). For a full team layout, add tier + scope or ask for *team capacity*._",
             "",
         ]
-        return "\n".join(intro + fmt_section(title, pairs, subtitle=sub, gate_tier=gt, max_alternates=5))
+        body_lines = intro + fmt_section(title, pairs, subtitle=sub, gate_tier=gt, max_alternates=5)
+        foot = format_excluded_comment_block(exr, _team_capacity_required_roles(only_role))
+        if foot:
+            body_lines.append("")
+            body_lines.append(foot)
+        return "\n".join(body_lines)
 
     lines: list[str] = [
         "*Team capacity* _(Capacity v2 + People & Tags; free = FREE or PARTIAL)_",
@@ -391,6 +413,11 @@ def build_team_capacity_markdown(
     lines.append(
         f"• *Tier 4* (conservative, no Commercial): ≤ {t4_slots} — confirm manually with Commercial."
     )
+
+    foot = format_excluded_comment_block(exr, _team_capacity_required_roles(only_role))
+    if foot:
+        lines.append("")
+        lines.append(foot)
 
     return "\n".join(lines)
 

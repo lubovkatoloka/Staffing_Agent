@@ -1,4 +1,4 @@
-"""Optional Notion API: page title + short text preview (integration token in NOTION_TOKEN)."""
+"""Optional Notion API: page title + short text preview (NOTION_API_KEY or NOTION_TOKEN in `.env`)."""
 
 from __future__ import annotations
 

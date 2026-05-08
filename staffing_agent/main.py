@@ -66,6 +66,20 @@ def main() -> None:
         except Exception as e:
             print(f"CHECK FAILED: {e}", file=sys.stderr, flush=True)
             raise SystemExit(1) from e
+        try:
+            from staffing_agent.exclusions import check_notion_exclusions_connection
+
+            check_notion_exclusions_connection()
+            print("Notion exclusions (People & Tags data source): OK", flush=True)
+        except Exception as e:
+            print(
+                f"CHECK_NOTION_FAILED: {e}\n"
+                "Fix: set NOTION_API_KEY (or NOTION_TOKEN) with an integration that can read "
+                "Staffing — People & Tags.",
+                file=sys.stderr,
+                flush=True,
+            )
+            raise SystemExit(1) from e
         if databricks_profile():
             try:
                 check_databricks_sql()

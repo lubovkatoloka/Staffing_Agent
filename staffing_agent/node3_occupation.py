@@ -19,6 +19,11 @@ from staffing_agent.capacity_runtime import (
 )
 from staffing_agent.config_loader import load_decision_config
 from staffing_agent.databricks_cli import databricks_profile, run_sql_query
+from staffing_agent.exclusions import (
+    ExclusionUnavailableError,
+    get_exclusion_store,
+    slack_exclusion_unavailable_message,
+)
 from staffing_agent.node3_role_buckets import format_role_bucket_fallback, format_role_bucket_section
 from staffing_agent.node4_recommendation import build_project_recommendation_markdown
 from staffing_agent.projects_classification import append_similar_projects_to_lines
@@ -234,6 +239,11 @@ def node3_slack_markdown(
             )
         )
     else:
+        try:
+            exr = get_exclusion_store().get()
+        except ExclusionUnavailableError:
+            return slack_exclusion_unavailable_message(title="Staffing")
+
         staffing = load_staffing_records()
         npw = default_new_project_weight(cfg, tier)
         rows = prepare_rows_for_recommendation(
@@ -241,6 +251,7 @@ def node3_slack_markdown(
             decision_cfg=cfg,
             new_project_weight=npw,
             staffing=staffing,
+            excluded_emails=exr.excluded_emails,
         )
 
         role_filter = occupation_preview_roles(tier)
@@ -273,6 +284,7 @@ def node3_slack_markdown(
             detail="minimal" if minimal else "standard",
             project_staffing_rows=project_staffing_snapshot,
             sese_path=sese_path,
+            exclusion_result=exr,
         )
         if minimal:
             return rec

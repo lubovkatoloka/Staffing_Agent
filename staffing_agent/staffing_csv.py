@@ -2,7 +2,8 @@
 Load Notion-export CSV (People & Tags) and match to Occupation rows by email.
 
 Rules (product):
-- Comment: block staffing if matches `comment_block_patterns` in config/staffing_csv.yaml.
+- Hard exclusions (Comment phrases like do not staff / onboarding) come from live Notion via
+  ``staffing_agent.exclusions`` — not from this CSV.
 - SO Status: only \"SO\" or \"can be SO\" (case-insensitive) qualify as responsible / SO pick.
 - Skills: overlap with Phase B `project_type_tags` + thread summary for ranking.
 """
@@ -11,7 +12,6 @@ from __future__ import annotations
 
 import csv
 import os
-import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Optional
@@ -96,19 +96,6 @@ def load_staffing_records(path: Optional[Path] = None) -> dict[str, StaffingReco
         )
         out[email] = rec
     return out
-
-
-def comment_blocks_staffing(comment: str, cfg: Mapping[str, Any]) -> bool:
-    if not (comment or "").strip():
-        return False
-    patterns = cfg.get("comment_block_patterns") or []
-    for pat in patterns:
-        try:
-            if re.search(str(pat), comment):
-                return True
-        except re.error:
-            continue
-    return False
 
 
 def is_so_or_can_be_so(so_status: str) -> bool:

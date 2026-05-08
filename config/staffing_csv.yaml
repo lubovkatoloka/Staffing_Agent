@@ -8,14 +8,8 @@
 # 4) Перезапустить бота — агент читает файл при каждом @mention.
 #
 # Переопределение пути: env STAFFING_PEOPLE_CSV_PATH
+#
+# Комментарии для жёстких исключений (do not staff / onboarding / …) берутся из живого Notion
+# People & Tags через staffing_agent.exclusions (NOTION_API_KEY / NOTION_TOKEN), не из этого файла.
 
 csv_path: notion_export/staffing_people_tags_all.csv
-
-# Если поле Comment совпадает с одним из regex — человека не стаффим вообще.
-comment_block_patterns:
-  - "(?i)do not staff"
-  - "(?i)not for staffing"
-  - "(?i)no staffing"
-  - "(?i)не стафф"
-  - "(?i)без стаффа"
-  - "(?i)исключ"

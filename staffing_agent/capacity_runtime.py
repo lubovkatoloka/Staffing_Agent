@@ -6,7 +6,7 @@ from typing import Any, Mapping, Optional
 
 from staffing_agent.decision import CapacityRow, CapacityVerdict, assess
 from staffing_agent.node3_row_utils import email_value
-from staffing_agent.staffing_csv import StaffingRecord, comment_blocks_staffing, load_staffing_table_config
+from staffing_agent.staffing_csv import StaffingRecord
 
 
 def _row_int_like(row: Mapping[str, Any], key: str) -> int:
@@ -102,7 +102,7 @@ def verdict_for_person_rows(
     *,
     decision_cfg: Mapping[str, Any],
     new_project_weight: float,
-    staffing: Mapping[str, StaffingRecord],
+    excluded_emails: frozenset[str],
     in_hard_exclude_override: Optional[bool] = None,
 ) -> tuple[CapacityVerdict, tuple[CapacityRow, ...]]:
     """Single person's SQL fan-out rows → verdict + project rows."""
@@ -110,11 +110,9 @@ def verdict_for_person_rows(
     on_pto, pto_up = _pto_flags_from_group(group)
 
     em = str(_row_get_ci(group[0], "user_email", "email") or "").strip().lower()
-    rec = staffing.get(em) if em else None
-    st_cfg = load_staffing_table_config()
     hard_ex = in_hard_exclude_override
     if hard_ex is None:
-        hard_ex = bool(rec and comment_blocks_staffing(rec.comment, st_cfg))
+        hard_ex = bool(em and em in excluded_emails)
 
     v = assess(
         cr,
@@ -132,7 +130,7 @@ def collapse_capacity_sql_rows(
     *,
     decision_cfg: Mapping[str, Any],
     new_project_weight: float,
-    staffing: Mapping[str, StaffingRecord],
+    excluded_emails: frozenset[str],
 ) -> list[dict[str, Any]]:
     """One dict per user_id with canonical Node 3/4 fields + verdict."""
     from collections import defaultdict
@@ -151,7 +149,7 @@ def collapse_capacity_sql_rows(
             group,
             decision_cfg=decision_cfg,
             new_project_weight=new_project_weight,
-            staffing=staffing,
+            excluded_emails=excluded_emails,
         )
         rg = str(_row_get_ci(base, "role_group", "ROLE_GROUP") or "").strip()
         base["project_role"] = role_group_to_project_role(rg)
@@ -180,27 +178,31 @@ def prepare_rows_for_recommendation(
     decision_cfg: Mapping[str, Any],
     new_project_weight: float,
     staffing: Mapping[str, StaffingRecord],
+    excluded_emails: frozenset[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Normalize raw SQL or test rows to one row per person with `_capacity_verdict`."""
     if not rows:
         return []
     if all(r.get("_capacity_verdict") is not None for r in rows):
         return merge_explicit_verdict_rows(rows)
+    from staffing_agent.exclusions import get_exclusion_store
+
+    resolved_excluded = (
+        excluded_emails if excluded_emails is not None else get_exclusion_store().get().excluded_emails
+    )
     if _looks_capacity_fanout(rows):
         return collapse_capacity_sql_rows(
             rows,
             decision_cfg=decision_cfg,
             new_project_weight=new_project_weight,
-            staffing=staffing,
+            excluded_emails=resolved_excluded,
         )
-    st_cfg = load_staffing_table_config()
     synthetic: list[dict[str, Any]] = []
     for r in rows:
         cp = dict(r)
         if cp.get("_capacity_verdict") is None:
             em = email_value(cp)
-            rec = staffing.get(em) if em else None
-            hard_ex = bool(rec and comment_blocks_staffing(rec.comment, st_cfg))
+            hard_ex = bool(em and em in resolved_excluded)
             cp["_capacity_verdict"] = assess(
                 [],
                 on_pto_today=False,

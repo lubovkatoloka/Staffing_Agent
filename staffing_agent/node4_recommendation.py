@@ -1,5 +1,5 @@
 """
-Who can take the project — ranked recommendation from Capacity v2 rows + People & Tags CSV (email join).
+Who can take the project — ranked recommendation from Capacity v2 rows + People & Tags (email join).
 """
 
 from __future__ import annotations
@@ -20,12 +20,11 @@ from staffing_agent.project_staffing_gates import (
     active_project_rows_for_person,
     project_staffing_gate_reason,
 )
+from staffing_agent.exclusions import ExclusionResult, format_excluded_comment_block, get_exclusion_store
 from staffing_agent.staffing_csv import (
     StaffingRecord,
-    comment_blocks_staffing,
     is_so_or_can_be_so,
     load_staffing_records,
-    load_staffing_table_config,
     skill_match_score,
 )
 
@@ -79,6 +78,7 @@ def _staffing_full_scored(
     staffing: dict[str, StaffingRecord],
     project_staffing_rows: Optional[list[dict[str, Any]]] = None,
     new_project_weight: float,
+    excluded_emails: frozenset[str],
 ) -> list[tuple[dict[str, Any], CapacityVerdict, StaffingRecord | None, int, str | None]]:
     """All role-filtered candidates with CSV reasons — same sort as recommendation."""
     if not rows or tier is None or tier not in (1, 2, 3, 4):
@@ -92,7 +92,6 @@ def _staffing_full_scored(
     if not candidates:
         return []
 
-    st_cfg = load_staffing_table_config()
     scored: list[tuple[dict[str, Any], CapacityVerdict, StaffingRecord | None, int, str | None]] = []
     for r in candidates:
         verdict = _verdict(r)
@@ -102,10 +101,10 @@ def _staffing_full_scored(
         pr = project_role_norm(r)
         reason: str | None = None
         needs_so = _needs_so_table_filter(pr)
-        if rec:
-            if comment_blocks_staffing(rec.comment, st_cfg):
-                reason = "blocked_comment"
-            elif needs_so and not is_so_or_can_be_so(rec.so_status):
+        if em and em in excluded_emails:
+            reason = "blocked_comment"
+        elif rec:
+            if needs_so and not is_so_or_can_be_so(rec.so_status):
                 reason = "not_so"
         else:
             if needs_so:
@@ -567,11 +566,13 @@ def pickable_recommendation_rows(
     tags = project_type_tags or []
     staffing = staffing_by_email if staffing_by_email is not None else load_staffing_records()
     npw = default_new_project_weight(decision_cfg, tier)
+    exr = get_exclusion_store().get()
     prepared = prepare_rows_for_recommendation(
         rows,
         decision_cfg=decision_cfg,
         new_project_weight=npw,
         staffing=staffing,
+        excluded_emails=exr.excluded_emails,
     )
     scored = _staffing_full_scored(
         prepared,
@@ -582,6 +583,7 @@ def pickable_recommendation_rows(
         staffing=staffing,
         project_staffing_rows=project_staffing_rows,
         new_project_weight=npw,
+        excluded_emails=exr.excluded_emails,
     )
     if tier not in (1, 2, 3, 4):
         pickable = [it for it in scored if _is_pickable_tuple(it)]
@@ -620,6 +622,7 @@ def build_project_recommendation_markdown(
     detail: Literal["minimal", "standard", "full"] = "standard",
     project_staffing_rows: Optional[list[dict[str, Any]]] = None,
     sese_path: bool = False,
+    exclusion_result: Optional[ExclusionResult] = None,
 ) -> str:
     """
     Role-grouped primary + alternates (Capacity v2 + People & Tags ranking).
@@ -631,6 +634,7 @@ def build_project_recommendation_markdown(
     tags = project_type_tags or []
     staffing = staffing_by_email if staffing_by_email is not None else load_staffing_records()
     npw = default_new_project_weight(decision_cfg, tier)
+    exr = exclusion_result or get_exclusion_store().get()
 
     if not rows:
         return ""
@@ -640,6 +644,7 @@ def build_project_recommendation_markdown(
         decision_cfg=decision_cfg,
         new_project_weight=npw,
         staffing=staffing,
+        excluded_emails=exr.excluded_emails,
     )
 
     if tier is None:
@@ -674,8 +679,9 @@ def build_project_recommendation_markdown(
         staffing=staffing,
         project_staffing_rows=project_staffing_rows,
         new_project_weight=npw,
+        excluded_emails=exr.excluded_emails,
     )
-    return _build_grouped_recommendation_md(
+    body = _build_grouped_recommendation_md(
         tier=tier,
         sese_path=sese_path,
         scored=scored,
@@ -683,3 +689,8 @@ def build_project_recommendation_markdown(
         project_staffing_rows=project_staffing_rows,
         new_pw=npw,
     )
+    role_filter = occupation_preview_roles(tier) or frozenset()
+    footer = format_excluded_comment_block(exr, role_filter)
+    if footer:
+        body += "\n\n" + footer
+    return body
