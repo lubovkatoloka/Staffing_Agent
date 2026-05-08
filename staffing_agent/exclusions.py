@@ -14,9 +14,12 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
+
+_DOTENV_TRIED = False
 
 NOTION_API_VERSION = "2026-03-11"
 NOTION_DATA_SOURCE_ID = os.environ.get(
@@ -48,7 +51,9 @@ NOTION_TAG_TO_PROJECT_ROLES: dict[str, frozenset[str]] = {
 class ExclusionUnavailableError(RuntimeError):
     """No exclusion snapshot available (no token, first fetch failed, no cache)."""
 
-
+    def __init__(self, message: str = "", *, slack_detail: str | None = None) -> None:
+        super().__init__(message)
+        self.slack_detail = slack_detail
 @dataclass(frozen=True)
 class ExcludedPerson:
     email: str  # lowercased
@@ -71,19 +76,38 @@ class ExclusionResult:
         return {p.email: p.comment for p in self.excluded}
 
 
+def _maybe_load_repo_dotenv() -> None:
+    """If `.env` next to repo root was never merged into os.environ, load it (does not override existing vars)."""
+    global _DOTENV_TRIED
+    if _DOTENV_TRIED:
+        return
+    _DOTENV_TRIED = True
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        return
+    env_path = Path(__file__).resolve().parent.parent / ".env"
+    if env_path.is_file():
+        load_dotenv(env_path, override=False)
+
+
 def notion_auth_token() -> str:
     """Bearer token for Notion API: prefer NOTION_API_KEY, then NOTION_TOKEN."""
+    _maybe_load_repo_dotenv()
     return (
         (os.environ.get("NOTION_API_KEY") or os.environ.get("NOTION_TOKEN") or "").strip()
     )
 
 
-def slack_exclusion_unavailable_message(*, title: str = "Staffing") -> str:
+def slack_exclusion_unavailable_message(*, title: str = "Staffing", detail: str | None = None) -> str:
     mins = max(1, (CACHE_TTL_SECONDS + 59) // 60)
-    return (
+    body = (
         f"*{title}*\n"
         f"⚠️ Exclusion data unavailable. Try in {mins} min or ping @operations."
     )
+    if detail:
+        body += "\n" + detail
+    return body
 
 
 def project_roles_for_notion_tag(tag: str) -> frozenset[str]:
@@ -187,7 +211,12 @@ class ExclusionStore:
         token = notion_auth_token()
         if not token:
             raise ExclusionUnavailableError(
-                "NOTION_API_KEY or NOTION_TOKEN must be set for live People & Tags exclusions."
+                "NOTION_API_KEY or NOTION_TOKEN must be set for live People & Tags exclusions.",
+                slack_detail=(
+                    "_The bot process has no Notion token._ Add `NOTION_API_KEY=…` (or `NOTION_TOKEN`) to `.env` "
+                    "at the **repo root** (next to `staffing_agent/`), restart the bot, then run "
+                    "`python3 -m staffing_agent --check`._"
+                ),
             )
         try:
             fresh = self._fetch_live(token)
@@ -202,7 +231,12 @@ class ExclusionStore:
                 )
                 return self._cached
             raise ExclusionUnavailableError(
-                "Exclusion data unavailable — Notion fetch failed and no cache."
+                "Exclusion data unavailable — Notion fetch failed and no cache.",
+                slack_detail=(
+                    "_Notion request failed (see bot stderr for HTTP/body snippet)._ "
+                    "Check the integration has access to **Staffing — People & Tags**, "
+                    "the token is valid, then retry after a few minutes if Notion had an outage._"
+                ),
             ) from exc
 
     def _fetch_live(self, token: str) -> ExclusionResult:

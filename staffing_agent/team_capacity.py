@@ -162,8 +162,8 @@ def build_team_capacity_markdown(
 
     try:
         exr = get_exclusion_store().get()
-    except ExclusionUnavailableError:
-        return slack_exclusion_unavailable_message(title="Team capacity")
+    except ExclusionUnavailableError as e:
+        return slack_exclusion_unavailable_message(title="Team capacity", detail=e.slack_detail)
 
     npw = 0.0
     prepared = prepare_rows_for_recommendation(

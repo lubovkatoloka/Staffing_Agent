@@ -241,8 +241,8 @@ def node3_slack_markdown(
     else:
         try:
             exr = get_exclusion_store().get()
-        except ExclusionUnavailableError:
-            return slack_exclusion_unavailable_message(title="Staffing")
+        except ExclusionUnavailableError as e:
+            return slack_exclusion_unavailable_message(title="Staffing", detail=e.slack_detail)
 
         staffing = load_staffing_records()
         npw = default_new_project_weight(cfg, tier)
