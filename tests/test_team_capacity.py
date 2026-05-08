@@ -142,3 +142,77 @@ def test_team_capacity_snapshot_hold_for_three_plus_heavy(monkeypatch: pytest.Mo
     assert "Hold (snapshot" in text
     assert "hold for Tier < 3" in text
 
+
+def test_on_pto_today_not_in_free_bucket(monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = load_decision_config()
+    tw = cfg.get("tier_weights") or {}
+    npw = float(tw.get("Tier 2", 1.0))
+    free_row = _person("a@t.com", "Alice Free", "soe", cfg, _proj("p1", "P", tier="Tier 2"))
+    on_pto_row = {
+        "user_email": "b@t.com",
+        "user_name": "Bob OnPTO",
+        "project_role": "soe",
+        "_capacity_verdict": assess(
+            [],
+            on_pto_today=True,
+            pto_upcoming=None,
+            in_hard_exclude=False,
+            new_project_weight=npw,
+            cfg=cfg,
+        ),
+        "_capacity_rows": (),
+    }
+    staffing = {
+        "a@t.com": StaffingRecord(
+            name="Alice",
+            email="a@t.com",
+            job_title="",
+            comment="",
+            role_tag="",
+            so_status="SO",
+            skills=(),
+        ),
+        "b@t.com": StaffingRecord(
+            name="Bob",
+            email="b@t.com",
+            job_title="",
+            comment="",
+            role_tag="",
+            so_status="SO",
+            skills=(),
+        ),
+    }
+    monkeypatch.setattr("staffing_agent.team_capacity.load_staffing_records", lambda: staffing)
+    text = build_team_capacity_markdown([free_row, on_pto_row], decision_cfg=cfg)
+    soe_seg = text.split("SoE / SSoE", 1)[1].split("DPM", 1)[0]
+    assert "Alice Free" in soe_seg
+    assert "Bob OnPTO" not in soe_seg
+    assert "PTO today: 1" in soe_seg
+
+
+def test_upcoming_pto_marker_in_team_capacity(monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = load_decision_config()
+    row = _person("a@t.com", "Alice", "soe", cfg, _proj("p1", "P", tier="Tier 2"))
+    row["_capacity_verdict"] = assess(
+        list(row["_capacity_rows"]),
+        on_pto_today=False,
+        pto_upcoming=("2026-05-15", "2026-05-22"),
+        in_hard_exclude=False,
+        new_project_weight=0.0,
+        cfg=cfg,
+    )
+    staffing = {
+        "a@t.com": StaffingRecord(
+            name="Alice",
+            email="a@t.com",
+            job_title="",
+            comment="",
+            role_tag="",
+            so_status="SO",
+            skills=(),
+        ),
+    }
+    monkeypatch.setattr("staffing_agent.team_capacity.load_staffing_records", lambda: staffing)
+    text = build_team_capacity_markdown([row], decision_cfg=cfg)
+    assert "⚠️ PTO 2026-05-15" in text
+

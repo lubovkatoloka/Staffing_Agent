@@ -380,6 +380,22 @@ def _truncate_project_name(name: str, max_len: int = 25) -> str:
     return base[: max_len - 1].rstrip() + "…"
 
 
+def _risk_and_pto_inline(verdict: CapacityVerdict, crs: tuple[CapacityRow, ...]) -> str:
+    """BEHIND/AT_RISK project marker + upcoming PTO (Rule 8b); cap at 2, then +N more."""
+    warnings: list[str] = []
+    risk_marker = _risk_inline(crs).strip()
+    if risk_marker:
+        warnings.append(risk_marker)
+    if verdict.pto_upcoming_dates is not None:
+        pto_start, _ = verdict.pto_upcoming_dates
+        warnings.append(f"⚠️ PTO {pto_start}")
+    if len(warnings) > 2:
+        return " " + " ".join(warnings[:2]) + f" ⚠️ +{len(warnings) - 2} more issues"
+    if warnings:
+        return " " + " ".join(warnings)
+    return ""
+
+
 def _risk_inline(crs: tuple[CapacityRow, ...]) -> str:
     worst: CapacityRow | None = None
     worst_rank = 99
@@ -446,9 +462,9 @@ def _person_lines_slim(
     base_name, ext_suf = _display_name_parts(r, rec)
     soft = " [SOFT]" if verdict.is_soft else ""
     crs = tuple(r.get("_capacity_rows") or ())
-    risk = _risk_inline(crs)
+    risk_inline = _risk_and_pto_inline(verdict, crs)
     band = verdict.band.value
-    body = f"• *{base_name}{ext_suf}* · {role_label} · `{cu:.2f} → {after:.2f}` · {band}{soft}{risk}"
+    body = f"• *{base_name}{ext_suf}* · {role_label} · `{cu:.2f} → {after:.2f}` · {band}{soft}{risk_inline}"
     out = [body]
     compact = _compact_projects_tail(crs)
     if compact:

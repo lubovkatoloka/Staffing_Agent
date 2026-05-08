@@ -48,3 +48,56 @@ def test_role_buckets_tier2_hides_wfm():
     assert "Carol" not in text
     assert "WFM / WFC" not in text
 
+
+def test_role_buckets_excludes_on_pto_today():
+    cfg = load_decision_config()
+
+    def _custom_row(name, role, on_pto, *projs):
+        v = assess(
+            list(projs),
+            on_pto_today=on_pto,
+            pto_upcoming=None,
+            in_hard_exclude=False,
+            new_project_weight=0.0,
+            cfg=cfg,
+        )
+        return {
+            "user_name": name,
+            "project_role": role,
+            "_capacity_verdict": v,
+            "_capacity_rows": tuple(projs),
+        }
+
+    rows = [
+        _custom_row(
+            "Alice Free",
+            "soe",
+            False,
+            CapacityRow("p1", "P1", "Tier 2", "building", "ON_TRACK"),
+        ),
+        _custom_row("Bob OnPTO", "soe", True),
+    ]
+    text = format_role_bucket_section(rows, decision_cfg=cfg)
+    assert "Alice Free" in text
+    assert "Bob OnPTO" not in text
+
+
+def test_role_buckets_show_upcoming_pto_marker():
+    cfg = load_decision_config()
+    v = assess(
+        [CapacityRow("p1", "P1", "Tier 2", "building", "ON_TRACK")],
+        on_pto_today=False,
+        pto_upcoming=("2026-05-15", "2026-05-22"),
+        in_hard_exclude=False,
+        new_project_weight=0.0,
+        cfg=cfg,
+    )
+    row = {
+        "user_name": "Alice",
+        "project_role": "soe",
+        "_capacity_verdict": v,
+        "_capacity_rows": (CapacityRow("p1", "P1", "Tier 2", "building", "ON_TRACK"),),
+    }
+    text = format_role_bucket_section([row], decision_cfg=cfg)
+    assert "⚠️ PTO 2026-05-15" in text
+

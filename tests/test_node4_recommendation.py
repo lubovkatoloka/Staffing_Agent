@@ -288,3 +288,73 @@ def test_skill_ranking_with_tags():
     so_seg = text.split("*SO Recommendations*", 1)[1].split("*WFM Recommendations*", 1)[0]
     assert so_seg.index("A") < so_seg.index("B")
 
+
+def test_upcoming_pto_renders_marker_in_recommendation():
+    cfg = load_decision_config()
+    staffing = {"a@t.com": _so("a@t.com")}
+    rows = [_person("a@t.com", "Alice", "soe", cfg, 2, _proj("p1", "P1", tier="Tier 2"))]
+    rows[0]["_capacity_verdict"] = assess(
+        list(rows[0]["_capacity_rows"]),
+        on_pto_today=False,
+        pto_upcoming=("2026-05-15", "2026-05-22"),
+        in_hard_exclude=False,
+        new_project_weight=float((cfg.get("tier_weights") or {}).get("Tier 2", 1.0)),
+        cfg=cfg,
+    )
+    text = build_project_recommendation_markdown(
+        rows, tier=2, decision_cfg=cfg, staffing_by_email=staffing, detail="minimal"
+    )
+    assert "⚠️ PTO 2026-05-15" in text
+    assert "Alice" in text
+
+
+def test_on_pto_today_excluded_from_picks():
+    cfg = load_decision_config()
+    staffing = {"a@t.com": _so("a@t.com"), "b@t.com": _so("b@t.com")}
+    tw = cfg.get("tier_weights") or {}
+    npw = float(tw.get("Tier 2", 1.0))
+    free_row = _person("a@t.com", "Alice", "soe", cfg, 2, _proj("p1", "P", tier="Tier 2"))
+    on_pto_row = _person("b@t.com", "Bob OnPTO", "soe", cfg, 2)
+    on_pto_row["_capacity_verdict"] = assess(
+        [],
+        on_pto_today=True,
+        pto_upcoming=None,
+        in_hard_exclude=False,
+        new_project_weight=npw,
+        cfg=cfg,
+    )
+    text = build_project_recommendation_markdown(
+        [on_pto_row, free_row], tier=2, decision_cfg=cfg, staffing_by_email=staffing, detail="minimal"
+    )
+    assert "Alice" in text
+    so_seg = text.split("*SO Recommendations*", 1)[1]
+    assert "Bob OnPTO" not in so_seg
+
+
+def test_combined_risk_and_pto_markers_capped_at_two():
+    cfg = load_decision_config()
+    staffing = {"a@t.com": _so("a@t.com")}
+    rows = [
+        _person(
+            "a@t.com",
+            "Alice",
+            "soe",
+            cfg,
+            2,
+            _proj("p1", "P1", tier="Tier 2", stage="discovery", status="BEHIND"),
+        )
+    ]
+    rows[0]["_capacity_verdict"] = assess(
+        list(rows[0]["_capacity_rows"]),
+        on_pto_today=False,
+        pto_upcoming=("2026-05-15", "2026-05-22"),
+        in_hard_exclude=False,
+        new_project_weight=float((cfg.get("tier_weights") or {}).get("Tier 2", 1.0)),
+        cfg=cfg,
+    )
+    text = build_project_recommendation_markdown(
+        rows, tier=2, decision_cfg=cfg, staffing_by_email=staffing, detail="minimal"
+    )
+    assert "⚠️ BEHIND" in text
+    assert "⚠️ PTO 2026-05-15" in text
+

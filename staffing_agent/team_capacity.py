@@ -52,8 +52,11 @@ def _classify_label(row: dict[str, Any]) -> Band:
     return _verdict(row).band
 
 
-def _is_freeish(band: Band) -> bool:
-    return band in (Band.FREE, Band.PARTIAL)
+def _row_is_freeish(row: dict[str, Any]) -> bool:
+    v = _verdict(row)
+    if v.on_pto_today:
+        return False
+    return v.band in (Band.FREE, Band.PARTIAL)
 
 
 def _row_usable(
@@ -69,8 +72,13 @@ def _row_usable(
 
 
 def _fmt_person(row: dict[str, Any], band: Band) -> str:
-    cu = _verdict(row).capacity_used
-    return f"{name_value(row)} — capacity *{cu:.2f}* → `{band.value}`"
+    v = _verdict(row)
+    cu = v.capacity_used
+    pto_marker = ""
+    up = v.pto_upcoming_dates
+    if up is not None:
+        pto_marker = f" ⚠️ PTO {up[0]}"
+    return f"{name_value(row)} — capacity *{cu:.2f}* → `{band.value}`{pto_marker}"
 
 
 def _dedupe_pairs(pairs: list[tuple[dict[str, Any], Band]]) -> list[tuple[dict[str, Any], Band]]:
@@ -202,8 +210,11 @@ def build_team_capacity_markdown(
             sec.append(subtitle)
         if ps:
             sec.append(f"_Snapshot gates: `tier={gate_tier}` (aligned with Node 4)._")
-        free_pairs = [p for p in pairs if _is_freeish(p[1])]
+        free_pairs = [p for p in pairs if _row_is_freeish(p[0])]
         free_pairs = sorted(free_pairs, key=sort_key)
+        on_pto_count = sum(1 for r, _lb in pairs if _verdict(r).on_pto_today)
+        if on_pto_count:
+            sec[0] = sec[0] + f" _([PTO today: {on_pto_count}])_"
         if not free_pairs:
             sec.append("_No one in FREE/PARTIAL in this slice._")
             return sec
@@ -324,6 +335,8 @@ def build_team_capacity_markdown(
         gate_tier: int,
     ) -> bool:
         if band != Band.FREE:
+            return False
+        if _verdict(r).on_pto_today:
             return False
         ok, _rcode = _snapshot_gate_outcome(ps, r, gate_tier, cfg)
         return ok

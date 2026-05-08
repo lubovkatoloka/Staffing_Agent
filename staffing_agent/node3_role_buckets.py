@@ -45,7 +45,10 @@ def _line_for_row(row: dict[str, Any]) -> str:
     if verdict.is_soft and verdict.soft_reasons:
         soft = " `[SOFT: " + ", ".join(s.value for s in verdict.soft_reasons) + "]`"
     projs = format_capacity_projects_line(tuple(row.get("_capacity_rows") or ()))
-    return f"• {name} — capacity *{cu:.2f}* → `{label}`{soft} — _{projs}_"
+    pto = ""
+    if verdict.pto_upcoming_dates is not None:
+        pto = f" ⚠️ PTO {verdict.pto_upcoming_dates[0]}"
+    return f"• {name} — capacity *{cu:.2f}* → `{label}`{soft}{pto} — _{projs}_"
 
 
 def _take_bucket(
@@ -56,8 +59,17 @@ def _take_bucket(
 ) -> list[dict[str, Any]]:
     cand = [r for r in rows if pred(r)]
     cand.sort(key=lambda r: float(_verdict(r).capacity_used))
-    non_busy = [r for r in cand if _verdict(r).band != Band.AT_CAP]
-    use = non_busy if non_busy else cand
+    non_busy = [
+        r for r in cand
+        if _verdict(r).band != Band.AT_CAP and not _verdict(r).on_pto_today
+    ]
+    at_cap_only = [r for r in cand if _verdict(r).band == Band.AT_CAP]
+    if non_busy:
+        use = non_busy
+    elif at_cap_only:
+        use = at_cap_only
+    else:
+        use = []
     return use[:max_n]
 
 
