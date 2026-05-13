@@ -199,7 +199,7 @@ def create_app() -> App:
             file=sys.stderr,
             flush=True,
         )
-        reply = build_slack_mention_reply(
+        replies = build_slack_mention_reply(
             messages,
             previews,
             spec,
@@ -209,11 +209,11 @@ def create_app() -> App:
             trigger_message_text=(event.get("text") or None),
         )
 
-        if len(reply) > 12000:
-            reply = reply[:11900] + "\n```\n… (truncated)"
-
         try:
-            client.chat_postMessage(channel=channel, thread_ts=root_ts, text=reply)
+            for reply in replies:
+                if len(reply) > 12000:
+                    reply = reply[:11900] + "\n```\n… (truncated)"
+                client.chat_postMessage(channel=channel, thread_ts=root_ts, text=reply)
         except Exception as e:
             logger.exception("chat_postMessage failed: %s", e)
             raise

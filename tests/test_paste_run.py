@@ -21,13 +21,13 @@ def test_team_capacity_routes_to_live_capacity_markdown(monkeypatch: pytest.Monk
     monkeypatch.setenv("STAFFING_AGENT_REPLY_STYLE", "minimal")
     calls: list[str] = []
 
-    def _cap(*, only_role: object = None, timeout_sec: int = 300) -> str:
+    def _cap(*, only_role: object = None, timeout_sec: int = 300) -> list[str]:
         calls.append(str(only_role))
-        return "CAPACITY_SNAPSHOT_BODY"
+        return ["CAPACITY_SNAPSHOT_BODY"]
 
     monkeypatch.setattr("staffing_agent.paste_run.build_live_capacity_markdown", _cap)
     spec = RequestSpec(tier=None, summary="capacity ask")
-    text = build_slack_mention_reply(
+    chunks = build_slack_mention_reply(
         [{"user": "U1", "text": "Team capacity @bot"}],
         [],
         spec,
@@ -35,7 +35,7 @@ def test_team_capacity_routes_to_live_capacity_markdown(monkeypatch: pytest.Monk
         thread_plain="Team capacity @who_is_available",
     )
     assert calls == ["None"]
-    assert "CAPACITY_SNAPSHOT_BODY" in text
+    assert any("CAPACITY_SNAPSHOT_BODY" in c for c in chunks)
 
 
 def test_minimal_reply_without_tier_does_not_call_node3(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -52,7 +52,8 @@ def test_minimal_reply_without_tier_does_not_call_node3(monkeypatch: pytest.Monk
 
     monkeypatch.setattr("staffing_agent.paste_run.node3_slack_markdown", _should_not_run)
     spec = RequestSpec(tier=None, summary="A Google Doc about apps; not a staffing request.")
-    text = build_slack_mention_reply([], [], spec, extraction_src_label="anthropic")
+    chunks = build_slack_mention_reply([], [], spec, extraction_src_label="anthropic")
+    text = chunks[0]
     assert not calls
     assert "контекст" in text or "Team capacity" in text
 

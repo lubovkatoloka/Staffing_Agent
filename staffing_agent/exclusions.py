@@ -14,6 +14,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Any, Optional
 
@@ -136,29 +137,47 @@ def format_excluded_comment_block(
     result: ExclusionResult,
     required_project_roles: frozenset[str],
     *,
-    max_lines: int = 8,
-    comment_max_len: int = 80,
+    start_dates: dict[str, date] | None = None,
+    max_lines: int = 12,
 ) -> str:
-    """Slack mrkdwn footer: excluded people whose Role Tag overlaps required roles."""
+    """Slack mrkdwn footer: onboarding exclusions (People & Tags) overlapping Tier/capacity roles."""
     if not required_project_roles:
         return ""
     hits = [
         p
         for p in result.excluded
-        if project_roles_for_notion_tag(p.role_tag) & required_project_roles
+        if "onboarding" in (p.comment or "").lower()
+        and project_roles_for_notion_tag(p.role_tag) & required_project_roles
     ]
     if not hits:
         return ""
-    hits.sort(key=lambda p: p.name.casefold())
-    lines: list[str] = ["_Excluded by comment:_"]
+    today = date.today()
+
+    def _sort_key(p: ExcludedPerson) -> tuple[int, int, str]:
+        if start_dates:
+            sd = start_dates.get(p.email)
+        else:
+            sd = None
+        if sd is None:
+            return (1, 0, p.name.casefold())
+        days = max(0, (today - sd).days)
+        return (0, days, p.name.casefold())
+
+    hits.sort(key=_sort_key)
+    lines: list[str] = ["_Onboarding (excluded from picks):_"]
     shown = hits[:max_lines]
     for p in shown:
-        cmt = (p.comment or "").strip()
-        if len(cmt) > comment_max_len:
-            cmt = cmt[: comment_max_len - 1] + "…"
-        lines.append(f"• {p.name} — {cmt}")
+        if start_dates:
+            sd = start_dates.get(p.email)
+        else:
+            sd = None
+        if sd is None:
+            tail = "(start date unknown)"
+        else:
+            tail = f"({max(0, (today - sd).days)} days)"
+        lines.append(f"• {p.name} — onboarding {tail}")
     if len(hits) > max_lines:
-        lines.append(f"_…and {len(hits) - max_lines} more excluded._")
+        lines.append(f"_…and {len(hits) - max_lines} more._")
     return "\n".join(lines)
 
 
@@ -261,8 +280,6 @@ class ExclusionStore:
             if not email or "@" not in email:
                 continue
             if not comment:
-                continue
-            if not role_tag_in_staffing_pool(role_tag):
                 continue
             if match_hard_exclude(comment) is None:
                 continue

@@ -4,7 +4,8 @@ Load Notion-export CSV (People & Tags) and match to Occupation rows by email.
 Rules (product):
 - Hard exclusions (Comment phrases like do not staff / onboarding) come from live Notion via
   ``staffing_agent.exclusions`` — not from this CSV.
-- SO Status: only \"SO\" or \"can be SO\" (case-insensitive) qualify as responsible / SO pick.
+- SO Status: **Primary SO pool** uses exact **SO** only (`is_so`). **can be SO** is a pipeline marker
+  — use `is_so_or_can_be_so` only where stretch/future ranking is intentional (not primary SO bucket).
 - Skills: overlap with Phase B `project_type_tags` + thread summary for ranking.
 """
 
@@ -12,6 +13,7 @@ from __future__ import annotations
 
 import csv
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Optional
@@ -98,8 +100,34 @@ def load_staffing_records(path: Optional[Path] = None) -> dict[str, StaffingReco
     return out
 
 
+def is_so(so_status: str) -> bool:
+    """Confirmed accountable SO — exact 'SO' (case-insensitive), not 'can be SO'."""
+    return (so_status or "").strip().lower() == "so"
+
+
+def is_so_eligible_for_tier(rec: StaffingRecord, tier: int) -> bool:
+    """SO slot eligibility by tier (People & Tags + job title)."""
+    if not is_so(rec.so_status):
+        return False
+    if tier in (1, 2):
+        return True
+    if tier in (3, 4):
+        title = (rec.job_title or "").lower()
+        is_senior = any(
+            x in title for x in ("senior", "sr.", "sr ", "principal", "staff ", "lead ")
+        )
+        if title.startswith("sr ") or " sr " in title:
+            is_senior = True
+        parts = [x.strip().upper() for x in re.split(r"[,;/]", rec.role_tag or "") if x.strip()]
+        if not parts and (rec.role_tag or "").strip():
+            parts = [(rec.role_tag or "").strip().upper()]
+        is_dpm = "DPM" in parts
+        return is_senior or is_dpm
+    return False
+
+
 def is_so_or_can_be_so(so_status: str) -> bool:
-    """Responsible / SO: only SO or can be SO (per table)."""
+    """Stretch / ranking: SO or can be SO (do not use for primary SO bucket)."""
     s = (so_status or "").strip().lower()
     if not s:
         return False

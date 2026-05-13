@@ -5,7 +5,7 @@ Who can take the project — ranked recommendation from Capacity v2 rows + Peopl
 from __future__ import annotations
 
 import re
-from typing import Any, Literal, Mapping, NamedTuple, Optional
+from typing import Any, Literal, Mapping, NamedTuple, Optional, Tuple
 
 from staffing_agent.capacity_runtime import (
     default_new_project_weight,
@@ -20,20 +20,34 @@ from staffing_agent.project_staffing_gates import (
     active_project_rows_for_person,
     project_staffing_gate_reason,
 )
-from staffing_agent.exclusions import ExclusionResult, format_excluded_comment_block, get_exclusion_store
+from staffing_agent.exclusions import (
+    ExclusionResult,
+    format_excluded_comment_block,
+    get_exclusion_store,
+    project_roles_for_notion_tag,
+)
+from staffing_agent.hibob import fetch_start_dates
 from staffing_agent.staffing_csv import (
     StaffingRecord,
-    is_so_or_can_be_so,
+    is_so,
+    is_so_eligible_for_tier,
     load_staffing_records,
     skill_match_score,
 )
 
 
 class Tier3RoleBuckets(NamedTuple):
-    """Primary (rank #1) + alternates (next by rank) for one template slot."""
+    """Primary + pickable alternates + stretch (gated) alternates for one template slot."""
 
     primary: list[tuple[dict[str, Any], CapacityVerdict, StaffingRecord | None, int, str | None]]
     alternate: list[tuple[dict[str, Any], CapacityVerdict, StaffingRecord | None, int, str | None]]
+    stretch_alternates: tuple[tuple[dict[str, Any], CapacityVerdict, StaffingRecord | None, int, str | None], ...]
+
+
+# Minimum alternates per section whenever a primary exists (pickable first, then gated rows).
+RECOMMENDATION_MIN_ALTERNATES = 2
+
+ScoredTuple = Tuple[dict[str, Any], CapacityVerdict, Optional[StaffingRecord], int, Optional[str]]
 
 
 _STAGE_SHORT = {
@@ -59,9 +73,17 @@ def _band_rank(band: Band) -> int:
 def _so_rank(rec: StaffingRecord | None, *, needs_so: bool) -> int:
     if not needs_so:
         return 0
-    if rec and is_so_or_can_be_so(rec.so_status):
+    if rec and is_so(rec.so_status):
         return 0
     return 1
+
+
+def _so_slot_tuple(
+    it: tuple[dict[str, Any], CapacityVerdict, StaffingRecord | None, int, str | None],
+    tier: int,
+) -> bool:
+    _r, _v, rec, _sk, _reason = it
+    return rec is not None and is_so_eligible_for_tier(rec, tier)
 
 
 def _needs_so_table_filter(project_role: str) -> bool:
@@ -104,8 +126,11 @@ def _staffing_full_scored(
         if em and em in excluded_emails:
             reason = "blocked_comment"
         elif rec:
-            if needs_so and not is_so_or_can_be_so(rec.so_status):
-                reason = "not_so"
+            if needs_so and not is_so(rec.so_status):
+                # Tier 2–4: template has a dedicated *SoE* bench slot after *SO* (SoE/DPM in SO pool only via
+                # `_so_slot_tuple`). SoE-shaped people without People & Tags "SO" stay recommendable for SoE.
+                if pr != "soe" or tier not in (2, 3, 4):
+                    reason = "not_so"
         else:
             if needs_so:
                 reason = "no_csv"
@@ -165,6 +190,61 @@ def _is_pickable_tuple(
     return False
 
 
+def _email_norm_tuple(it: ScoredTuple) -> str:
+    return (email_value(it[0]) or "").strip().lower()
+
+
+def _stretch_ok_nonpickable(it: ScoredTuple) -> bool:
+    """Non-pickable row we may still list as a stretch alternate (e.g. project_staffing gate)."""
+    if _is_pickable_tuple(it):
+        return False
+    _r, v, _rec, _sk, reason = it
+    if reason == "blocked_comment":
+        return False
+    if v.on_pto_today:
+        return False
+    if v.band not in (Band.FREE, Band.PARTIAL):
+        return False
+    if v.ineligible_reason != IneligibleReason.OK:
+        return False
+    if not v.eligible_for_new:
+        return False
+    return True
+
+
+def _fill_slot_alternates(
+    ordered: list[ScoredTuple],
+    *,
+    primary: list[ScoredTuple],
+    min_alternates: int = RECOMMENDATION_MIN_ALTERNATES,
+    extra_used: frozenset[str] = frozenset(),
+) -> tuple[list[ScoredTuple], tuple[ScoredTuple, ...]]:
+    """Up to ``min_alternates`` names: pickable first in sort order, then gated/stretch."""
+    used: set[str] = set(extra_used) | {_email_norm_tuple(x) for x in primary if _email_norm_tuple(x)}
+    pick_alts: list[ScoredTuple] = []
+    for it in ordered:
+        em = _email_norm_tuple(it)
+        if not em or em in used:
+            continue
+        if len(pick_alts) >= min_alternates:
+            break
+        if _is_pickable_tuple(it):
+            pick_alts.append(it)
+            used.add(em)
+    stretch: list[ScoredTuple] = []
+    if len(pick_alts) < min_alternates:
+        for it in ordered:
+            em = _email_norm_tuple(it)
+            if not em or em in used:
+                continue
+            if len(pick_alts) + len(stretch) >= min_alternates:
+                break
+            if _stretch_ok_nonpickable(it):
+                stretch.append(it)
+                used.add(em)
+    return pick_alts, tuple(stretch)
+
+
 def _scored_tuple_sort_key(
     it: tuple[dict[str, Any], CapacityVerdict, StaffingRecord | None, int, str | None],
 ) -> tuple[int, int, int, float, int, int]:
@@ -205,7 +285,6 @@ def _tier3_team_slices(
 ) -> tuple[Tier3RoleBuckets, Tier3RoleBuckets, Tier3RoleBuckets]:
     from staffing_agent.node3_project_staffing import count_active_orders_for_person
 
-    pickable_scored = [it for it in scored if _is_pickable_tuple(it)]
     cfg: Mapping[str, Any] = decision_cfg or {}
     ps = project_staffing_rows or []
     has_ps = bool(project_staffing_rows)
@@ -222,12 +301,22 @@ def _tier3_team_slices(
             return True
         return _orders(nm) < cap
 
-    so_pool_raw = [it for it in pickable_scored if project_role_norm(it[0]) in frozenset({"dpm", "soe"})]
-    so_pool_raw = [it for it in so_pool_raw if _pass_cap(name_value(it[0]), so_cap)]
-
-    so_pool = sorted(so_pool_raw, key=_scored_tuple_sort_key)
-    so_primary = so_pool[:1]
-    so_alternate = so_pool[1:3]
+    so_ordered = sorted(
+        [
+            it
+            for it in scored
+            if project_role_norm(it[0]) in frozenset({"dpm", "soe"})
+            and _so_slot_tuple(it, 3)
+            and _pass_cap(name_value(it[0]), so_cap)
+        ],
+        key=_scored_tuple_sort_key,
+    )
+    so_primary: list[ScoredTuple] = []
+    for it in so_ordered:
+        if _is_pickable_tuple(it):
+            so_primary = [it]
+            break
+    so_pick_alts, so_stretch = _fill_slot_alternates(so_ordered, primary=so_primary)
 
     so_emails_primary = {
         email_value(it[0]).strip().lower()
@@ -235,25 +324,49 @@ def _tier3_team_slices(
         if (email_value(it[0]) or "").strip()
     }
 
-    soe_pool_raw = [it for it in pickable_scored if project_role_norm(it[0]) == "soe"]
-    soe_pool_raw = [it for it in soe_pool_raw if _pass_cap(name_value(it[0]), soe_cap)]
-    soe_pool = sorted(soe_pool_raw, key=_scored_tuple_sort_key)
-    soe_for_team = [
-        it for it in soe_pool if email_value(it[0]).strip().lower() not in so_emails_primary
-    ]
-    soe_primary = soe_for_team[:1]
-    soe_alternate = soe_for_team[1:3]
+    soe_ordered = sorted(
+        [
+            it
+            for it in scored
+            if project_role_norm(it[0]) == "soe"
+            and _pass_cap(name_value(it[0]), soe_cap)
+        ],
+        key=_scored_tuple_sort_key,
+    )
+    soe_primary: list[ScoredTuple] = []
+    for it in soe_ordered:
+        em = _email_norm_tuple(it)
+        if em in so_emails_primary:
+            continue
+        if _is_pickable_tuple(it):
+            soe_primary = [it]
+            break
+    soe_pick_alts, soe_stretch = _fill_slot_alternates(
+        soe_ordered,
+        primary=soe_primary,
+        extra_used=frozenset(so_emails_primary),
+    )
 
-    wfm_pool_raw = [it for it in pickable_scored if project_role_norm(it[0]) == "wfm"]
-    wfm_pool_raw = [it for it in wfm_pool_raw if _pass_cap(name_value(it[0]), wfm_cap)]
-    wfm_pool = sorted(wfm_pool_raw, key=_scored_tuple_sort_key)
-    wfm_primary = wfm_pool[:1]
-    wfm_alternate = wfm_pool[1:3]
+    wfm_ordered = sorted(
+        [
+            it
+            for it in scored
+            if project_role_norm(it[0]) == "wfm"
+            and _pass_cap(name_value(it[0]), wfm_cap)
+        ],
+        key=_scored_tuple_sort_key,
+    )
+    wfm_primary: list[ScoredTuple] = []
+    for it in wfm_ordered:
+        if _is_pickable_tuple(it):
+            wfm_primary = [it]
+            break
+    wfm_pick_alts, wfm_stretch = _fill_slot_alternates(wfm_ordered, primary=wfm_primary)
 
     return (
-        Tier3RoleBuckets(so_primary, so_alternate),
-        Tier3RoleBuckets(soe_primary, soe_alternate),
-        Tier3RoleBuckets(wfm_primary, wfm_alternate),
+        Tier3RoleBuckets(so_primary, so_pick_alts, so_stretch),
+        Tier3RoleBuckets(soe_primary, soe_pick_alts, soe_stretch),
+        Tier3RoleBuckets(wfm_primary, wfm_pick_alts, wfm_stretch),
     )
 
 
@@ -265,7 +378,6 @@ def _tier4_team_slices(
 ) -> tuple[Tier3RoleBuckets, Tier3RoleBuckets, Tier3RoleBuckets, Tier3RoleBuckets]:
     from staffing_agent.node3_project_staffing import count_active_orders_for_person
 
-    pickable_scored = [it for it in scored if _is_pickable_tuple(it)]
     cfg: Mapping[str, Any] = decision_cfg or {}
     ps = project_staffing_rows or []
     has_ps = bool(project_staffing_rows)
@@ -283,11 +395,22 @@ def _tier4_team_slices(
             return True
         return _orders(nm) < cap
 
-    so_pool_raw = [it for it in pickable_scored if project_role_norm(it[0]) in frozenset({"dpm", "soe"})]
-    so_pool_raw = [it for it in so_pool_raw if _pass_cap(name_value(it[0]), so_cap)]
-    so_pool = sorted(so_pool_raw, key=_scored_tuple_sort_key)
-    so_primary = so_pool[:1]
-    so_alternate = so_pool[1:3]
+    so_ordered = sorted(
+        [
+            it
+            for it in scored
+            if project_role_norm(it[0]) in frozenset({"dpm", "soe"})
+            and _so_slot_tuple(it, 4)
+            and _pass_cap(name_value(it[0]), so_cap)
+        ],
+        key=_scored_tuple_sort_key,
+    )
+    so_primary: list[ScoredTuple] = []
+    for it in so_ordered:
+        if _is_pickable_tuple(it):
+            so_primary = [it]
+            break
+    so_pick_alts, so_stretch = _fill_slot_alternates(so_ordered, primary=so_primary)
 
     so_emails_primary = {
         email_value(it[0]).strip().lower()
@@ -295,50 +418,164 @@ def _tier4_team_slices(
         if (email_value(it[0]) or "").strip()
     }
 
-    soe_pool_raw = [it for it in pickable_scored if project_role_norm(it[0]) == "soe"]
-    soe_pool_raw = [it for it in soe_pool_raw if _pass_cap(name_value(it[0]), soe_cap)]
-    soe_pool = sorted(soe_pool_raw, key=_scored_tuple_sort_key)
-    soe_for_team = [
-        it for it in soe_pool if email_value(it[0]).strip().lower() not in so_emails_primary
-    ]
-    soe_primary = soe_for_team[:1]
-    soe_alternate = soe_for_team[1:3]
+    soe_ordered = sorted(
+        [
+            it
+            for it in scored
+            if project_role_norm(it[0]) == "soe"
+            and _pass_cap(name_value(it[0]), soe_cap)
+        ],
+        key=_scored_tuple_sort_key,
+    )
+    soe_primary = []
+    for it in soe_ordered:
+        em = _email_norm_tuple(it)
+        if em in so_emails_primary:
+            continue
+        if _is_pickable_tuple(it):
+            soe_primary = [it]
+            break
+    soe_pick_alts, soe_stretch = _fill_slot_alternates(
+        soe_ordered,
+        primary=soe_primary,
+        extra_used=frozenset(so_emails_primary),
+    )
 
-    wfm_pool_raw = [it for it in pickable_scored if project_role_norm(it[0]) == "wfm"]
-    wfm_pool_raw = [it for it in wfm_pool_raw if _pass_cap(name_value(it[0]), wfm_cap)]
-    wfm_pool = sorted(wfm_pool_raw, key=_scored_tuple_sort_key)
-    wfm_primary = wfm_pool[:1]
-    wfm_alternate = wfm_pool[1:3]
+    wfm_ordered = sorted(
+        [
+            it
+            for it in scored
+            if project_role_norm(it[0]) == "wfm"
+            and _pass_cap(name_value(it[0]), wfm_cap)
+        ],
+        key=_scored_tuple_sort_key,
+    )
+    wfm_primary = []
+    for it in wfm_ordered:
+        if _is_pickable_tuple(it):
+            wfm_primary = [it]
+            break
+    wfm_pick_alts, wfm_stretch = _fill_slot_alternates(wfm_ordered, primary=wfm_primary)
 
-    se_pool_raw = [it for it in pickable_scored if project_role_norm(it[0]) == "se"]
-    se_pool_raw = [it for it in se_pool_raw if _pass_cap(name_value(it[0]), se_cap)]
-    se_pool = sorted(se_pool_raw, key=_scored_tuple_sort_key)
-    se_primary = se_pool[:1]
-    se_alternate = se_pool[1:3]
+    se_ordered = sorted(
+        [
+            it
+            for it in scored
+            if project_role_norm(it[0]) == "se"
+            and _pass_cap(name_value(it[0]), se_cap)
+        ],
+        key=_scored_tuple_sort_key,
+    )
+    se_primary = []
+    for it in se_ordered:
+        if _is_pickable_tuple(it):
+            se_primary = [it]
+            break
+    se_pick_alts, se_stretch = _fill_slot_alternates(se_ordered, primary=se_primary)
 
     return (
-        Tier3RoleBuckets(so_primary, so_alternate),
-        Tier3RoleBuckets(soe_primary, soe_alternate),
-        Tier3RoleBuckets(wfm_primary, wfm_alternate),
-        Tier3RoleBuckets(se_primary, se_alternate),
+        Tier3RoleBuckets(so_primary, so_pick_alts, so_stretch),
+        Tier3RoleBuckets(soe_primary, soe_pick_alts, soe_stretch),
+        Tier3RoleBuckets(wfm_primary, wfm_pick_alts, wfm_stretch),
+        Tier3RoleBuckets(se_primary, se_pick_alts, se_stretch),
     )
 
 
 def _tier1_team_slices(
     scored: list[tuple[dict[str, Any], CapacityVerdict, StaffingRecord | None, int, str | None]],
 ) -> tuple[Tier3RoleBuckets, Tier3RoleBuckets]:
-    pickable_scored = [it for it in scored if _is_pickable_tuple(it)]
-    so_pool = sorted(
-        [it for it in pickable_scored if project_role_norm(it[0]) in frozenset({"dpm", "wfm"})],
+    so_ordered = sorted(
+        [
+            it
+            for it in scored
+            if project_role_norm(it[0]) in frozenset({"dpm", "wfm"})
+            and _so_slot_tuple(it, 1)
+        ],
         key=_scored_tuple_sort_key,
     )
-    wfm_pool = sorted(
-        [it for it in pickable_scored if project_role_norm(it[0]) == "wfm"],
+    so_primary: list[ScoredTuple] = []
+    for it in so_ordered:
+        if _is_pickable_tuple(it):
+            so_primary = [it]
+            break
+    so_pick_alts, so_stretch = _fill_slot_alternates(so_ordered, primary=so_primary)
+
+    wfm_ordered = sorted(
+        [it for it in scored if project_role_norm(it[0]) == "wfm"],
         key=_scored_tuple_sort_key,
     )
+    wfm_primary: list[ScoredTuple] = []
+    for it in wfm_ordered:
+        if _is_pickable_tuple(it):
+            wfm_primary = [it]
+            break
+    wfm_pick_alts, wfm_stretch = _fill_slot_alternates(wfm_ordered, primary=wfm_primary)
+
     return (
-        Tier3RoleBuckets(so_pool[:1], so_pool[1:3]),
-        Tier3RoleBuckets(wfm_pool[:1], wfm_pool[1:3]),
+        Tier3RoleBuckets(so_primary, so_pick_alts, so_stretch),
+        Tier3RoleBuckets(wfm_primary, wfm_pick_alts, wfm_stretch),
+    )
+
+
+def _tier2_full_team_slices(
+    scored: list[tuple[dict[str, Any], CapacityVerdict, StaffingRecord | None, int, str | None]],
+) -> tuple[Tier3RoleBuckets, Tier3RoleBuckets, Tier3RoleBuckets]:
+    """Tier 2 full template: SoE/DPM (SO) + SoE bench + WFM (no parallel-order caps)."""
+    so_ordered = sorted(
+        [
+            it
+            for it in scored
+            if project_role_norm(it[0]) in frozenset({"dpm", "soe"})
+            and _so_slot_tuple(it, 2)
+        ],
+        key=_scored_tuple_sort_key,
+    )
+    so_primary: list[ScoredTuple] = []
+    for it in so_ordered:
+        if _is_pickable_tuple(it):
+            so_primary = [it]
+            break
+    so_pick_alts, so_stretch = _fill_slot_alternates(so_ordered, primary=so_primary)
+
+    so_emails_primary = {
+        email_value(it[0]).strip().lower()
+        for it in so_primary
+        if (email_value(it[0]) or "").strip()
+    }
+
+    soe_ordered = sorted(
+        [it for it in scored if project_role_norm(it[0]) == "soe"],
+        key=_scored_tuple_sort_key,
+    )
+    soe_primary: list[ScoredTuple] = []
+    for it in soe_ordered:
+        em = _email_norm_tuple(it)
+        if em in so_emails_primary:
+            continue
+        if _is_pickable_tuple(it):
+            soe_primary = [it]
+            break
+    soe_pick_alts, soe_stretch = _fill_slot_alternates(
+        soe_ordered,
+        primary=soe_primary,
+        extra_used=frozenset(so_emails_primary),
+    )
+
+    wfm_ordered = sorted(
+        [it for it in scored if project_role_norm(it[0]) == "wfm"],
+        key=_scored_tuple_sort_key,
+    )
+    wfm_primary: list[ScoredTuple] = []
+    for it in wfm_ordered:
+        if _is_pickable_tuple(it):
+            wfm_primary = [it]
+            break
+    wfm_pick_alts, wfm_stretch = _fill_slot_alternates(wfm_ordered, primary=wfm_primary)
+
+    return (
+        Tier3RoleBuckets(so_primary, so_pick_alts, so_stretch),
+        Tier3RoleBuckets(soe_primary, soe_pick_alts, soe_stretch),
+        Tier3RoleBuckets(wfm_primary, wfm_pick_alts, wfm_stretch),
     )
 
 
@@ -347,20 +584,28 @@ def _tier2_bucket_map(
     *,
     sese_path: bool,
 ) -> dict[str, Tier3RoleBuckets]:
-    pickable_scored = [it for it in scored if _is_pickable_tuple(it)]
-    so_pool = sorted(
-        [it for it in pickable_scored if project_role_norm(it[0]) in frozenset({"dpm", "soe"})],
-        key=_scored_tuple_sort_key,
-    )
     if sese_path:
-        return {"SoE/DPM (SO)": Tier3RoleBuckets(so_pool[:1], so_pool[1:3])}
-    wfm_pool = sorted(
-        [it for it in pickable_scored if project_role_norm(it[0]) == "wfm"],
-        key=_scored_tuple_sort_key,
-    )
+        so_ordered = sorted(
+            [
+                it
+                for it in scored
+                if project_role_norm(it[0]) in frozenset({"dpm", "soe"})
+                and _so_slot_tuple(it, 2)
+            ],
+            key=_scored_tuple_sort_key,
+        )
+        so_primary: list[ScoredTuple] = []
+        for it in so_ordered:
+            if _is_pickable_tuple(it):
+                so_primary = [it]
+                break
+        so_pick_alts, so_stretch = _fill_slot_alternates(so_ordered, primary=so_primary)
+        return {"SoE/DPM (SO)": Tier3RoleBuckets(so_primary, so_pick_alts, so_stretch)}
+    so_b, soe_b, wfm_b = _tier2_full_team_slices(scored)
     return {
-        "SoE/DPM (SO)": Tier3RoleBuckets(so_pool[:1], so_pool[1:3]),
-        "WFM": Tier3RoleBuckets(wfm_pool[:1], wfm_pool[1:3]),
+        "SoE/DPM (SO)": so_b,
+        "SoE": soe_b,
+        "WFM": wfm_b,
     }
 
 
@@ -452,6 +697,7 @@ def _person_lines_slim(
     it: tuple[dict[str, Any], CapacityVerdict, StaffingRecord | None, int, str | None],
     *,
     new_pw: float,
+    stretch_candidate: bool = False,
 ) -> list[str]:
     r, verdict, rec, _sk, _gate_reason = it
     cu = verdict.capacity_used
@@ -464,6 +710,8 @@ def _person_lines_slim(
     risk_inline = _risk_and_pto_inline(verdict, crs)
     band = verdict.band.value
     body = f"• *{base_name}{ext_suf}* · {role_label} · `{cu:.2f} → {after:.2f}` · {band}{soft}{risk_inline}"
+    if stretch_candidate:
+        body += " _[gated — verify snapshot / People & Tags]_"
     out = [body]
     compact = _compact_projects_tail(crs)
     if compact:
@@ -485,11 +733,22 @@ def _slot_section_md(
     else:
         lines.append("_None available — see Risks below._")
         risks.append(f"No pickable candidate for *{header_key}*.")
-    if bucket.alternate:
+    if bucket.primary:
         lines.append("")
         lines.append("_Alternates:_")
         for it in bucket.alternate:
             lines.extend(_person_lines_slim(it, new_pw=new_pw))
+        for it in bucket.stretch_alternates:
+            lines.extend(_person_lines_slim(it, new_pw=new_pw, stretch_candidate=True))
+        if not bucket.alternate and not bucket.stretch_alternates:
+            lines.append("_No other people in this tier’s snapshot._")
+    elif bucket.alternate or bucket.stretch_alternates:
+        lines.append("")
+        lines.append("_Alternates:_")
+        for it in bucket.alternate:
+            lines.extend(_person_lines_slim(it, new_pw=new_pw))
+        for it in bucket.stretch_alternates:
+            lines.extend(_person_lines_slim(it, new_pw=new_pw, stretch_candidate=True))
     return "\n".join(lines), risks
 
 
@@ -690,7 +949,14 @@ def build_project_recommendation_markdown(
         new_pw=npw,
     )
     role_filter = occupation_preview_roles(tier) or frozenset()
-    footer = format_excluded_comment_block(exr, role_filter)
+    onboarding_emails = {
+        p.email
+        for p in exr.excluded
+        if "onboarding" in (p.comment or "").lower()
+        and project_roles_for_notion_tag(p.role_tag) & role_filter
+    }
+    start_dates = fetch_start_dates(onboarding_emails) if onboarding_emails else None
+    footer = format_excluded_comment_block(exr, role_filter, start_dates=start_dates)
     if footer:
         body += "\n\n" + footer
     return body

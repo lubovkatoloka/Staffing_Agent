@@ -35,15 +35,43 @@ def _person(email: str, name: str, role: str, cfg, tier_ctx: int, *projects: Cap
     }
 
 
-def _so(email: str, so_status: str = "SO", skills: tuple[str, ...] = (), comment: str = "") -> StaffingRecord:
+def _so(
+    email: str,
+    so_status: str = "SO",
+    skills: tuple[str, ...] = (),
+    comment: str = "",
+    *,
+    job_title: str = "",
+    role_tag: str = "",
+) -> StaffingRecord:
     return StaffingRecord(
         name=email.split("@")[0],
         email=email,
-        job_title="",
+        job_title=job_title,
         comment=comment,
-        role_tag="",
+        role_tag=role_tag,
         so_status=so_status,
         skills=skills,
+    )
+
+
+def _so_t3_pool(
+    email: str,
+    so_status: str = "SO",
+    skills: tuple[str, ...] = (),
+    comment: str = "",
+    *,
+    job_title: str = "",
+    role_tag: str = "DPM",
+) -> StaffingRecord:
+    """Tier 3/4 SO pool needs senior signal or DPM in People & Tags role_tag."""
+    return _so(
+        email,
+        so_status,
+        skills,
+        comment,
+        job_title=job_title,
+        role_tag=role_tag,
     )
 
 
@@ -84,7 +112,7 @@ def test_tier2_primary_is_free_lowest_occupation():
 def test_tier3_shows_on_active_orders_when_snapshot_provided():
     cfg = load_decision_config()
     staffing = {
-        "d@t.com": _so("d@t.com"),
+        "d@t.com": _so_t3_pool("d@t.com"),
         "s@t.com": _so("s@t.com"),
         "w@t.com": _so("w@t.com"),
     }
@@ -129,8 +157,8 @@ def test_tier3_so_primary_email_excluded_from_soe_slice():
     """SO slot winner email never repeats under SoE Recommendations (primary-only exclusion rule)."""
     cfg = load_decision_config()
     staffing = {
-        "charlie@t.com": _so("charlie@t.com"),
-        "eddie@t.com": _so("eddie@t.com"),
+        "charlie@t.com": _so_t3_pool("charlie@t.com"),
+        "eddie@t.com": _so_t3_pool("eddie@t.com"),
         "dana@t.com": _so("dana@t.com"),
     }
     rows = [
@@ -156,13 +184,72 @@ def test_tier3_so_primary_email_excluded_from_soe_slice():
     assert "Dana Soe" in after_soe_header
 
 
+def test_tier3_soe_bench_without_so_tag_when_so_primary_is_soe():
+    """SO primary is SO-eligible SoE; second-line SoE can be bench (no SO in People & Tags)."""
+    cfg = load_decision_config()
+    staffing = {
+        "oleg@t.com": _so_t3_pool("oleg@t.com", job_title="Senior Engineer"),
+        "ignat@t.com": _so("ignat@t.com", so_status="", job_title="Engineer"),
+    }
+    rows = [
+        _person("oleg@t.com", "Oleg Z", "soe", cfg, 3, _proj("p1", "Pa", tier="Tier 2")),
+        _person("ignat@t.com", "Ignat L", "soe", cfg, 3, _proj("p2", "Pb", tier="Tier 2")),
+    ]
+    text = build_project_recommendation_markdown(
+        rows, tier=3, decision_cfg=cfg, staffing_by_email=staffing, detail="minimal"
+    )
+    so_seg = text.split("*SO Recommendations*", 1)[1].split("*SoE Recommendations*", 1)[0]
+    assert "Oleg Z" in so_seg
+    _, after_soe = text.split("*SoE Recommendations*", 1)
+    soe_seg = after_soe.split("*WFM Recommendations*", 1)[0]
+    assert "Ignat L" in soe_seg
+
+
+def test_tier2_soe_without_so_goes_to_soe_bench_not_so_line():
+    """SoE without People & Tags SO cannot sit in SO line but can fill Tier 2 SoE bench."""
+    cfg = load_decision_config()
+    staffing = {
+        "d@t.com": _so("d@t.com"),
+        "s@t.com": _so("s@t.com", so_status=""),
+    }
+    rows = [
+        _person("d@t.com", "Dpm Only", "dpm", cfg, 2, _proj("p1", "A", tier="Tier 2")),
+        _person("s@t.com", "Soe NoSo", "soe", cfg, 2, _proj("p2", "B", tier="Tier 2")),
+    ]
+    text = build_project_recommendation_markdown(
+        rows, tier=2, decision_cfg=cfg, staffing_by_email=staffing, detail="minimal"
+    )
+    so_seg = text.split("*SO Recommendations*", 1)[1].split("*SoE Recommendations*", 1)[0]
+    assert "Dpm Only" in so_seg
+    assert "Soe NoSo" not in so_seg
+    soe_seg = text.split("*SoE Recommendations*", 1)[1].split("*WFM Recommendations*", 1)[0]
+    assert "Soe NoSo" in soe_seg
+
+
+def test_tier3_always_shows_alternates_under_each_primary():
+    """When primary exists, _Alternates:_ is always present (placeholder if the pool is thin)."""
+    cfg = load_decision_config()
+    staffing = {"only@t.com": _so_t3_pool("only@t.com")}
+    rows = [
+        _person("only@t.com", "Only SO", "dpm", cfg, 3, _proj("p1", "Solo", tier="Tier 3")),
+    ]
+    text = build_project_recommendation_markdown(
+        rows, tier=3, decision_cfg=cfg, staffing_by_email=staffing, detail="minimal"
+    )
+    assert "*SO Recommendations*" in text
+    so_seg = text.split("*SO Recommendations*", 1)[1].split("*SoE Recommendations*", 1)[0]
+    assert "_Alternates:_" in so_seg
+    assert "Only SO" in so_seg
+    assert "No other people in this tier" in so_seg
+
+
 def test_tier3_soe_skips_when_too_many_parallel_orders():
     """SoE slot uses exclude_soe_if_active_orders_gte from config (same idea as SO)."""
     cfg = load_decision_config()
     staffing = {
-        "a@t.com": _so("a@t.com"),
-        "b@t.com": _so("b@t.com"),
-        "c@t.com": _so("c@t.com"),
+        "a@t.com": _so_t3_pool("a@t.com"),
+        "b@t.com": _so_t3_pool("b@t.com"),
+        "c@t.com": _so_t3_pool("c@t.com"),
         "busy@t.com": _so("busy@t.com"),
         "free@t.com": _so("free@t.com"),
     }
@@ -195,8 +282,8 @@ def test_tier3_so_slot_skips_when_too_many_active_orders():
     """SO accountability: exclude from SO shortlist if ≥N concurrent orders in project_staffing snapshot."""
     cfg = load_decision_config()
     staffing = {
-        "heavy@t.com": _so("heavy@t.com"),
-        "light@t.com": _so("light@t.com"),
+        "heavy@t.com": _so_t3_pool("heavy@t.com"),
+        "light@t.com": _so_t3_pool("light@t.com"),
     }
     rows = [
         _person("heavy@t.com", "Heavy DPM", "dpm", cfg, 3, _proj("h", "H", tier="Tier 2")),
@@ -219,7 +306,7 @@ def test_tier3_so_slot_skips_when_too_many_active_orders():
 def test_tier3_has_so_soe_wfm_sections():
     cfg = load_decision_config()
     staffing = {
-        "d@t.com": _so("d@t.com"),
+        "d@t.com": _so_t3_pool("d@t.com"),
         "s@t.com": _so("s@t.com"),
         "w@t.com": _so("w@t.com"),
     }
@@ -261,7 +348,7 @@ def test_executor_excluded_from_pick():
     ]
     text = build_project_recommendation_markdown(rows, tier=2, decision_cfg=cfg, staffing_by_email=staffing)
     assert "*SO Recommendations*" in text
-    so_seg = text.split("*SO Recommendations*", 1)[1].split("*WFM Recommendations*", 1)[0]
+    so_seg = text.split("*SO Recommendations*", 1)[1].split("*SoE Recommendations*", 1)[0]
     assert "Ok" in so_seg
     assert "Exec" not in so_seg
 
@@ -285,7 +372,7 @@ def test_skill_ranking_with_tags():
         summary="TTS eval",
     )
     assert "A" in text
-    so_seg = text.split("*SO Recommendations*", 1)[1].split("*WFM Recommendations*", 1)[0]
+    so_seg = text.split("*SO Recommendations*", 1)[1].split("*SoE Recommendations*", 1)[0]
     assert so_seg.index("A") < so_seg.index("B")
 
 
@@ -327,8 +414,8 @@ def test_on_pto_today_excluded_from_picks():
         [on_pto_row, free_row], tier=2, decision_cfg=cfg, staffing_by_email=staffing, detail="minimal"
     )
     assert "Alice" in text
-    so_seg = text.split("*SO Recommendations*", 1)[1]
-    assert "Bob OnPTO" not in so_seg
+    so_only = text.split("*SO Recommendations*", 1)[1].split("*SoE Recommendations*", 1)[0]
+    assert "Bob OnPTO" not in so_only
 
 
 def test_combined_risk_and_pto_markers_capped_at_two():

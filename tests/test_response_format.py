@@ -9,7 +9,7 @@ import pytest
 
 from staffing_agent.config_loader import load_decision_config
 from staffing_agent.decision import CapacityRow, assess
-from staffing_agent.decision.team_template import team_template_for
+from staffing_agent.decision.team_template import SLOT_TO_SECTION_HEADER, team_template_for
 from staffing_agent.models.request_spec import RequestSpec
 from staffing_agent.node4_recommendation import build_project_recommendation_markdown
 from staffing_agent.paste_run import build_reply_from_paste
@@ -101,7 +101,7 @@ def test_canonical_paste_mock_within_budget(monkeypatch: pytest.MonkeyPatch, tie
 
     assert len(reply) <= 1500
     lines = reply.count("\n") + (1 if reply.strip() else 0)
-    assert lines <= 20
+    assert lines <= 25
 
     lower = reply.lower()
     for bad in (
@@ -128,12 +128,15 @@ def test_canonical_paste_mock_within_budget(monkeypatch: pytest.MonkeyPatch, tie
     tier_re = re.compile(r"^\*Tier [1-4] · [SML]: .+\* — .{1,80}$")
     assert tier_re.match(header_line), header_line
 
-    n_sections = len(re.findall(r"\*[^\n]* Recommendations\*", reply))
-    assert n_sections == len(team_template_for(2, sese_path=False))
+    slots = team_template_for(2, sese_path=False)
+    for label in slots:
+        header_key = SLOT_TO_SECTION_HEADER.get(label, label)
+        want = f"*{header_key}*"
+        assert sum(1 for line in reply.splitlines() if line.strip() == want) == 1
 
 
 def test_tier_line_fallback_without_judge() -> None:
     spec = RequestSpec(tier=2, complexity_class="S", judge="")
     header = spec.tier_slack_header_mrkdwn()
-    assert header == "*Tier 2 · S: SoE/DPM + WFM*"
+    assert header == "*Tier 2 · S: SoE/DPM + SoE + WFM*"
     assert " — " not in header

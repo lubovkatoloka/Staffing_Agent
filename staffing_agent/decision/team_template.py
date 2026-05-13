@@ -15,7 +15,7 @@ from __future__ import annotations
 # These match the v2 spec S4 table, minus Quality (QC+QM) — parked in backlog.
 TEAM_TEMPLATES: dict[int, tuple[str, ...]] = {
     1: ("DPM/WFM (SO)", "WFM"),  # Quality (QC+QM) dropped — backlog
-    2: ("SoE/DPM (SO)", "WFM"),  # Quality (QC+QM) dropped — backlog
+    2: ("SoE/DPM (SO)", "SoE", "WFM"),  # Quality (QC+QM) dropped — backlog
     3: ("SSoE/DPM (SO)", "SoE", "WFM"),
     4: ("SSoE/DPM (SO)", "SoE", "WFM", "SE"),
 }
@@ -37,7 +37,7 @@ def team_template_string(tier: int, sese_path: bool = False) -> str:
     """Return the staffing team as a compact string for the Slack header.
 
     Examples:
-        team_template_string(2) -> "SoE/DPM + WFM"
+        team_template_string(2) -> "SoE/DPM + SoE + WFM"
         team_template_string(4) -> "SSoE/DPM + SoE + WFM + SE"
         team_template_string(2, sese_path=True) -> "SoE/DPM"
     """
@@ -57,4 +57,23 @@ SLOT_TO_SECTION_HEADER: dict[str, str] = {
     "SoE": "SoE Recommendations",
     "SE": "SE Recommendations",
     # Note: no QM/QC keys — Quality role section is not rendered in this iteration.
+}
+
+# --- Team capacity Message 2 (PR-6): sub-bands under each role bucket ---
+TEAM_CAPACITY_SUBBAND_ORDER: tuple[str, ...] = (
+    "free",
+    "partial",
+    "hold",
+    "over_cap",
+    "pto",
+    "restricted",
+)
+
+TEAM_CAPACITY_SUBBAND_HEADER: dict[str, str] = {
+    "free": "*FREE*",
+    "partial": "*PARTIAL*",
+    "hold": "_Hold (snapshot — not for full staffing line):_",
+    "over_cap": "*OVER_CAP*",
+    "pto": "*PTO today*",
+    "restricted": "*Restricted*",
 }

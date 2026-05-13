@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from datetime import date
 
 import pytest
 
@@ -131,18 +132,100 @@ def test_fetch_live_respects_staffing_pool_and_matcher(monkeypatch: pytest.Monke
     emails = {p.email for p in res.excluded}
     assert "ada@toloka.ai" in emails
     assert "mario@toloka.ai" not in emails
-    assert "x@toloka.ai" not in emails
+    assert "x@toloka.ai" in emails
 
 
-def test_format_excluded_comment_block_respects_roles_and_truncates():
+def _patch_today(monkeypatch: pytest.MonkeyPatch, fixed: date) -> None:
+    monkeypatch.setattr(
+        "staffing_agent.exclusions.date",
+        type("_D", (), {"today": staticmethod(lambda: fixed)}),
+    )
+
+
+def test_format_onboarding_footer_shows_header_and_day_count(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_today(monkeypatch, date(2026, 6, 15))
     res = ExclusionResult(
         excluded=(
             ExcludedPerson(
-                email="a@t.com",
-                name="Ann",
+                email="ada@toloka.ai",
+                name="Ada",
                 role_tag="SSOE+SOE",
-                comment="onboarding " + "x" * 100,
+                comment="onboarding",
             ),
+        ),
+        fetched_at=0.0,
+    )
+    text = format_excluded_comment_block(
+        res,
+        frozenset({"soe"}),
+        start_dates={"ada@toloka.ai": date(2026, 6, 1)},
+    )
+    assert "_Onboarding (excluded from picks):_" in text
+    assert "Ada" in text
+    assert "onboarding (14 days)" in text
+
+
+def test_format_onboarding_sorts_by_days_since_hire_ascending(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_today(monkeypatch, date(2026, 6, 15))
+    res = ExclusionResult(
+        excluded=(
+            ExcludedPerson(
+                email="bob@t.com",
+                name="Bob",
+                role_tag="DPM",
+                comment="onboarding",
+            ),
+            ExcludedPerson(
+                email="ada@t.com",
+                name="Ada",
+                role_tag="SSOE+SOE",
+                comment="onboarding new hire",
+            ),
+        ),
+        fetched_at=0.0,
+    )
+    text = format_excluded_comment_block(
+        res,
+        frozenset({"soe", "dpm"}),
+        start_dates={
+            "bob@t.com": date(2026, 5, 1),
+            "ada@t.com": date(2026, 6, 1),
+        },
+    )
+    assert text.index("Ada") < text.index("Bob")
+
+
+def test_format_onboarding_missing_start_date_last_and_unknown_label(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_today(monkeypatch, date(2026, 6, 15))
+    res = ExclusionResult(
+        excluded=(
+            ExcludedPerson(
+                email="zed@t.com",
+                name="Zed",
+                role_tag="DPM",
+                comment="onboarding",
+            ),
+            ExcludedPerson(
+                email="ada@t.com",
+                name="Ada",
+                role_tag="DPM",
+                comment="onboarding",
+            ),
+        ),
+        fetched_at=0.0,
+    )
+    text = format_excluded_comment_block(
+        res,
+        frozenset({"dpm"}),
+        start_dates={"ada@t.com": date(2026, 6, 1)},
+    )
+    assert "(start date unknown)" in text
+    assert text.index("Ada") < text.index("Zed")
+
+
+def test_format_onboarding_empty_when_no_onboarding_comment_match() -> None:
+    res = ExclusionResult(
+        excluded=(
             ExcludedPerson(
                 email="b@t.com",
                 name="Bob",
@@ -152,10 +235,27 @@ def test_format_excluded_comment_block_respects_roles_and_truncates():
         ),
         fetched_at=0.0,
     )
-    text_tier_roles_soe_wfm = format_excluded_comment_block(res, frozenset({"soe", "wfm"}))
-    assert "Ann" in text_tier_roles_soe_wfm
-    assert "Bob" not in text_tier_roles_soe_wfm
-    assert "…" in text_tier_roles_soe_wfm
-    text_dpm = format_excluded_comment_block(res, frozenset({"dpm"}))
-    assert "Bob" in text_dpm
-    assert "Ann" not in text_dpm
+    assert format_excluded_comment_block(res, frozenset({"dpm"})) == ""
+
+
+def test_format_onboarding_only_includes_role_overlap() -> None:
+    res = ExclusionResult(
+        excluded=(
+            ExcludedPerson(
+                email="a@t.com",
+                name="Ann",
+                role_tag="SSOE+SOE",
+                comment="onboarding",
+            ),
+            ExcludedPerson(
+                email="b@t.com",
+                name="Bob",
+                role_tag="DPM",
+                comment="onboarding",
+            ),
+        ),
+        fetched_at=0.0,
+    )
+    text = format_excluded_comment_block(res, frozenset({"soe"}))
+    assert "Ann" in text
+    assert "Bob" not in text

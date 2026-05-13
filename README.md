@@ -105,7 +105,8 @@ When you `@mention` the bot, the terminal may look idle for **15–40 seconds** 
 
 ## Layout
 
-- [docs/FUNCTIONALITY_SCENARIOS.md](docs/FUNCTIONALITY_SCENARIOS.md) — полное описание функциональности и сценарии проверки.
+- [docs/DEPLOY_AZURE.md](docs/DEPLOY_AZURE.md) — деплой вне ноутбука, Azure, **миграция с локального Databricks auth**.
+- [docs/FUNCTIONALITY_SCENARIOS.md](docs/FUNCTIONALITY_SCENARIOS.md) — полное описание функциональности и сценарии проверки (в т.ч. team capacity: несколько сообщений в треде, заголовки `TEAM CAPACITY — OVERVIEW` / `BY ROLE`, опц. `STAFFING_TEAM_CAPACITY_CHUNK_CHARS` в `.env.example`).
 - `staffing_agent/slack_app.py` — Bolt app, thread fetch, placeholder reply.
 - `.env` — secrets (never committed).
 
