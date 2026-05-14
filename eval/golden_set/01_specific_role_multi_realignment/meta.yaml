@@ -1,0 +1,25 @@
+id: "01"
+category: specific_role
+source_channel: staffing
+tier: null
+tier_expected: undetermined-OK
+expected_route: S2-multi
+roles_requested:
+  - role: DPM
+    slots: 2
+    allocation_pct: 50
+    projects: [Migration Bench, Arena Ops]
+  - role: SoE
+    slots: 1
+    projects: [Consulting]
+specific_person_requested: Christelle
+current_bot_gaps:
+  - DPM_dropped_by_single_role_regex
+  - no_multi_slot_split
+  - no_specific_person_section
+  - no_phase_c_in_minimal_style
+notes: >
+  Multi-role re-alignment with one named candidate (Christelle) suggested
+  for both DPM slots. Current intent.py regex picks SoE first and drops both
+  DPMs. Expected CR-4 output splits per role+slot and shows requested-person
+  load separately.

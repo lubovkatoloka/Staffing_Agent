@@ -1,0 +1,8 @@
+Staffing re-alignment for several agentic projects @lubovka @mateusz.wiacek -- I want to initiate a couple of changes please:pray:
+
+Add DPM to Migration Bench (50% allocation should be enough, to take over from @iosida)
+Add DPM to support Arena Ops (50% allocation. If Amazon MCP continues these two are very closely related)
+maybe @cwinlime on both - best continuity if MCP continues
+another option to have someone else for Arena now - free up @cwinlime after MCP iteration is complete (if Amazon takes long) - and then re-do if MCP comes back
+
+SoE for Consulting: we confirmed project extension and @roman wanted additional SoE resource
