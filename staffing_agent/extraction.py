@@ -13,19 +13,50 @@ from dotenv import load_dotenv
 from staffing_agent.config_loader import load_decision_config, load_tier_classification_prompt
 from staffing_agent.intent import (
     is_likely_deal_notification_thread,
+    is_team_capacity_query,
+    single_role_focus_from_thread,
     thread_has_availability_capacity_ping,
+    thread_suggests_full_team_intent,
+    thread_suggests_pre_sales_rfp_deal_shape,
 )
 from staffing_agent.models.request_spec import RequestSpec
 
 _ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(_ROOT / ".env", override=True)
 
-logger = logging.getLogger(__name__)
+LLM_ACTIONABLE_TIER_CONFIDENCE = 0.7
 
+logger = logging.getLogger(__name__)
 _EXPLICIT_TIER_IN_TEXT_RE = re.compile(r"(?i)\btier\s*([1-4])\b")
 _STAFFING_CONTEXT_RE = re.compile(
     r"(?i)\b(need|staffing|staff|hire|soe|ssoe|sse|dpm|wfm|qm|owner|headcount|resourcing|"
     r"looking\s+for|who\s+can|join\s+us|open\s+role)\b"
+)
+_NARROW_CALL_SUPPORT_HINT = re.compile(
+    r"(?i)\b("
+    r"client\s+call|intro\s+call|discovery\s+call|join\s+(?:us\s+on\s+)?(?:the|a)\s+call|"
+    r"on\s+the\s+call\s+with|call\s+with\s+(?:the\s+)?client|who\s+covers\s+the\s+call|"
+    r"cover\s+the\s+call|call\s+support"
+    r")\b"
+)
+
+_ATTIO_SPEC_STRING_FIELDS: tuple[str, ...] = (
+    "request_type",
+    "attio_deal_id",
+    "attio_deal_name",
+    "attio_company_name",
+    "attio_deal_value",
+    "attio_currency",
+    "attio_stage",
+    "attio_owner",
+    "attio_source",
+    "attio_expected_close",
+    "attio_pipeline",
+    "attio_territory",
+    "attio_industry",
+    "attio_notes",
+    "attio_record_url",
+    "attio_created_at",
 )
 
 
@@ -100,16 +131,25 @@ def _extraction_rescue_spec(thread_text: str, exc: BaseException) -> RequestSpec
 
 
 def mock_llm_reason() -> str:
-    """Why mock mode is active; empty string if live LLM should run."""
-    if os.environ.get("STAFFING_AGENT_MOCK_LLM", "").strip() == "1":
+    """Why non-live LLM path is active; empty string if Anthropic would run."""
+    if intentional_mock_llm():
         return "STAFFING_AGENT_MOCK_LLM=1"
-    if not (os.environ.get("ANTHROPIC_API_KEY") or "").strip():
+    if not anthropic_api_key_configured():
         return "ANTHROPIC_API_KEY is empty"
     return ""
 
 
+def intentional_mock_llm() -> bool:
+    return os.environ.get("STAFFING_AGENT_MOCK_LLM", "").strip() == "1"
+
+
+def anthropic_api_key_configured() -> bool:
+    return bool((os.environ.get("ANTHROPIC_API_KEY") or "").strip())
+
+
 def uses_mock_llm() -> bool:
-    return bool(mock_llm_reason())
+    """True when extraction does not call Anthropic (intentional mock or missing API key)."""
+    return intentional_mock_llm() or not anthropic_api_key_configured()
 
 
 def forced_tier_from_env() -> int | None:
@@ -201,7 +241,81 @@ def _normalize_llm_spec_dict(data: dict[str, Any]) -> dict[str, Any]:
         out["sese_path"] = False
     else:
         out["sese_path"] = str(sp).strip().lower() in ("1", "true", "yes", "y")
+    allowed_narrow = ("pre_sales_shape", "call_support", "single_role")
+    nss = out.get("narrow_staffing_scenario")
+    if nss is None or (isinstance(nss, str) and not nss.strip()):
+        out["narrow_staffing_scenario"] = None
+    else:
+        s = str(nss).strip()
+        out["narrow_staffing_scenario"] = s if s in allowed_narrow else None
+    pa = out.get("parsed_ask_summary_en")
+    if pa is None:
+        out["parsed_ask_summary_en"] = ""
+    else:
+        pa_s = str(pa).strip()
+        out["parsed_ask_summary_en"] = pa_s[:1200] if len(pa_s) > 1200 else pa_s
+    inc = out.get("include_full_team_candidates")
+    if isinstance(inc, bool):
+        out["include_full_team_candidates"] = inc
+    elif inc is None:
+        out["include_full_team_candidates"] = False
+    else:
+        out["include_full_team_candidates"] = str(inc).strip().lower() in ("1", "true", "yes", "y")
+    ctags = out.get("call_support_role_tags")
+    if ctags is None:
+        out["call_support_role_tags"] = []
+    elif isinstance(ctags, str):
+        out["call_support_role_tags"] = [ctags.strip()] if ctags.strip() else []
+    elif not isinstance(ctags, list):
+        out["call_support_role_tags"] = []
+    else:
+        out["call_support_role_tags"] = [str(x).strip() for x in ctags if str(x).strip()]
+    nsr = out.get("narrow_single_role")
+    nsr_allowed = frozenset({"so", "soe", "dpm", "wfm", "qm", "se"})
+    if nsr is None or (isinstance(nsr, str) and not str(nsr).strip()):
+        out["narrow_single_role"] = None
+    else:
+        raw_nsr = str(nsr).strip().lower().replace(" ", "_").replace("-", "_")
+        alias = {
+            "ssoe": "soe",
+            "ssoe+soe": "soe",
+            "solution_engineer": "soe",
+            "accountable_so": "so",
+            "so_pool": "so",
+        }
+        raw_nsr = alias.get(raw_nsr, raw_nsr)
+        out["narrow_single_role"] = raw_nsr if raw_nsr in nsr_allowed else None
+    for ak in _ATTIO_SPEC_STRING_FIELDS:
+        v = out.get(ak)
+        if v is None:
+            out[ak] = ""
+        else:
+            s = str(v).strip()
+            out[ak] = s[:2000] if len(s) > 2000 else s
     return out
+
+
+def apply_llm_tier_confidence_gate(spec: RequestSpec) -> RequestSpec:
+    """Drop tier/complexity when Phase B confidence is below the actionable floor (CR-5)."""
+    if spec.tier is None:
+        return spec
+    conf = float(spec.confidence or 0.0)
+    if conf >= LLM_ACTIONABLE_TIER_CONFIDENCE:
+        return spec
+    extra = (
+        f"Tier/complexity cleared: confidence {conf:.2f} < {LLM_ACTIONABLE_TIER_CONFIDENCE} "
+        "(actionable tier requires confidence ≥ 0.7)."
+    )
+    notes = (spec.notes or "").strip()
+    notes = f"{notes}\n{extra}".strip() if notes else extra
+    return spec.model_copy(
+        update={
+            "tier": None,
+            "complexity_class": None,
+            "sese_path": False,
+            "notes": notes[:2000],
+        }
+    )
 
 
 def _deal_feed_fallback_spec(thread_text: str, exc: BaseException) -> RequestSpec:
@@ -220,38 +334,93 @@ def _deal_feed_fallback_spec(thread_text: str, exc: BaseException) -> RequestSpe
     )
 
 
-def apply_deal_feed_availability_tier_hint(thread_text: str, spec: RequestSpec) -> RequestSpec:
+def apply_narrow_staffing_thread_fallback(thread_text: str, spec: RequestSpec) -> RequestSpec:
     """
-    When Phase B leaves ``tier`` null but the thread is a deal/CRM feed **and** includes an availability
-    ping (``who_is_available``, “who is available”, “team capacity”, …), set a **hypothesis** Tier 3 · M
-    so Node 2–3 can run. Disable with ``STAFFING_DEAL_AVAILABILITY_TIER_HINT=0``.
+    When Phase B leaves ``narrow_staffing_scenario`` null, infer a narrow path from the Slack thread so
+    routing matches product intent (single-role shortlist even when ``tier`` is set; call / RFP shapes).
+
+    Does **not** override a non-null ``narrow_staffing_scenario`` from the LLM.
+
+    Disable with ``STAFFING_NARROW_THREAD_FALLBACK=0``.
     """
-    if spec.tier is not None:
+    if (os.environ.get("STAFFING_NARROW_THREAD_FALLBACK") or "1").strip() == "0":
         return spec
-    if (os.environ.get("STAFFING_DEAL_AVAILABILITY_TIER_HINT") or "1").strip() == "0":
+    if spec.narrow_staffing_scenario is not None:
         return spec
-    if not is_likely_deal_notification_thread(thread_text):
-        return spec
-    if not thread_has_availability_capacity_ping(thread_text):
-        return spec
-    rationale = (spec.tier_rationale or "").strip()
-    tag = (
-        "[Deal feed + availability ping: hypothesis Tier 3 · M so Node 2–3 can run; "
-        "confirm or adjust with Delivery.]"
+    tp = thread_text or ""
+    tl = tp.lower()
+
+    _role_labels = {
+        "so": "accountable SO",
+        "soe": "SoE / SSoE",
+        "dpm": "DPM",
+        "wfm": "WFM",
+        "qm": "QM",
+        "se": "SE",
+    }
+    if not is_team_capacity_query(tp):
+        role = single_role_focus_from_thread(tp)
+        if role in _role_labels:
+            if spec.tier is not None and thread_suggests_full_team_intent(tp):
+                return spec
+            pa0 = (spec.parsed_ask_summary_en or "").strip()
+            if not pa0:
+                pa0 = (
+                    f"Narrow ask: {_role_labels[role]} shortlist "
+                    "(auto-detected from thread — prefer explicit `narrow_staffing_scenario` from extraction)."
+                )
+            return spec.model_copy(
+                update={
+                    "narrow_staffing_scenario": "single_role",
+                    "narrow_single_role": role,
+                    "parsed_ask_summary_en": pa0[:1200],
+                }
+            )
+
+    staffingish = (
+        _thread_suggests_staffing_intent(tp)
+        or is_likely_deal_notification_thread(tp)
+        or spec.tier is not None
     )
-    rationale = f"{rationale}\n{tag}".strip() if rationale else tag
-    notes = (spec.notes or "").strip()
-    nextra = "Auto-tier hint: CRM/deal thread + availability / who_is_available wording."
-    notes = f"{notes}\n{nextra}".strip() if notes else nextra
-    return spec.model_copy(
-        update={
-            "tier": 3,
-            "complexity_class": "M",
-            "tier_rationale": rationale[:8000],
-            "notes": notes[:2000],
-            "confidence": max(float(spec.confidence or 0), 0.42),
-        }
-    )
+    if staffingish and _NARROW_CALL_SUPPORT_HINT.search(tp):
+        pa0 = (spec.parsed_ask_summary_en or "").strip()
+        if not pa0:
+            pa0 = (
+                "Call / client intro — SO bench plus tagged SoE/DPM slices "
+                "(auto-detected — prefer explicit `call_support_role_tags` from extraction)."
+            )
+        tags = [x for x in (spec.call_support_role_tags or []) if str(x).strip()]
+        if not tags:
+            tags = ["SSOE+SOE", "DPM"]
+        return spec.model_copy(
+            update={
+                "narrow_staffing_scenario": "call_support",
+                "call_support_role_tags": tags,
+                "parsed_ask_summary_en": pa0[:1200],
+            }
+        )
+
+    if thread_suggests_pre_sales_rfp_deal_shape(tp) and (
+        is_likely_deal_notification_thread(tp)
+        or "deal value" in tl
+        or spec.tier is not None
+        or _thread_suggests_staffing_intent(tp)
+        or thread_has_availability_capacity_ping(tp)
+    ):
+        pa0 = (spec.parsed_ask_summary_en or "").strip()
+        if not pa0:
+            pa0 = (
+                "Pre-sales / RFP scoping — SO bench first "
+                "(auto-detected — prefer explicit `pre_sales_shape` from extraction)."
+            )
+        return spec.model_copy(
+            update={
+                "narrow_staffing_scenario": "pre_sales_shape",
+                "parsed_ask_summary_en": pa0[:1200],
+            }
+        )
+
+    return spec
 
 
 def apply_forced_tier(spec: RequestSpec) -> RequestSpec:
@@ -281,34 +450,59 @@ def apply_forced_tier(spec: RequestSpec) -> RequestSpec:
     )
 
 
-def _mock_spec() -> RequestSpec:
+def _intentional_mock_spec(thread_text: str) -> RequestSpec:
     th = load_decision_config()
     ver = th.get("spec_version", "?")
+    brief = _thread_brief_for_fallback(thread_text)
+    clip = brief[:240] + ("…" if len(brief) > 240 else "")
     return RequestSpec(
         thread_kind="unclear",
-        tier=2,
-        complexity_class="S",
-        tier_rationale="Mock: default Tier 2 placeholder.",
+        tier=None,
+        complexity_class=None,
+        tier_rationale="",
         project_type_tags=[],
-        judge="Microsoft Copilot QA validation · 948 turns · hard May 22",
-        summary=(
-            f"Mock extraction (no Anthropic call). Decision-logic config v{ver}. "
-            "Set ANTHROPIC_API_KEY and ensure STAFFING_AGENT_MOCK_LLM is not 1 for real Opus."
-        ),
+        judge="",
+        summary=f"Mock mode (STAFFING_AGENT_MOCK_LLM=1); decision-logic v{ver}. Preview: {clip}",
         confidence=0.0,
         notes="mock_llm",
     )
 
 
+def _llm_unavailable_spec(thread_text: str) -> RequestSpec:
+    brief = _thread_brief_for_fallback(thread_text)
+    tk = "deal_notification" if is_likely_deal_notification_thread(thread_text) else "unclear"
+    return RequestSpec(
+        thread_kind=tk,
+        tier=None,
+        complexity_class=None,
+        tier_rationale="",
+        project_type_tags=[],
+        judge="",
+        summary=brief,
+        confidence=0.0,
+        notes="Classification unavailable: ANTHROPIC_API_KEY is not set. Heuristic routing only.",
+    )
+
+
 def extract_request_spec(thread_text: str, notion_excerpt: str = "") -> tuple[RequestSpec, str]:
     """
-    Returns (RequestSpec, source) where source is 'mock' or 'anthropic'.
+    Returns (RequestSpec, source).
+
+    ``source`` is one of: ``anthropic``, ``mock`` (``STAFFING_AGENT_MOCK_LLM=1``),
+    ``llm_unavailable`` (no API key), ``anthropic_fallback``, ``anthropic_rescue``, ``error``.
 
     `notion_excerpt` may include Notion + Google Docs text (same field as before; name kept for compatibility).
     """
-    if uses_mock_llm():
-        logger.warning("using mock LLM: %s", mock_llm_reason())
-        return apply_forced_tier(_mock_spec()), "mock"
+    if intentional_mock_llm():
+        logger.warning("STAFFING_AGENT_MOCK_LLM=1 (intentional mock; no Opus call)")
+        spec = _intentional_mock_spec(thread_text)
+        spec = apply_narrow_staffing_thread_fallback(thread_text, spec)
+        return apply_forced_tier(spec), "mock"
+    if not anthropic_api_key_configured():
+        logger.warning("Anthropic unavailable: ANTHROPIC_API_KEY empty")
+        spec = _llm_unavailable_spec(thread_text)
+        spec = apply_narrow_staffing_thread_fallback(thread_text, spec)
+        return apply_forced_tier(spec), "llm_unavailable"
 
     from staffing_agent.anthropic_llm import complete_json
 
@@ -338,9 +532,8 @@ def extract_request_spec(thread_text: str, notion_excerpt: str = "") -> tuple[Re
         "Read the Slack thread and optional Notion excerpts. "
         "If the thread is pasted proposal copy, FAQ, or 'better phrasing' without any staffing or availability signal, "
         "set tier to null — do not assign Tier 1–4 from product description alone. "
-        "**Exception:** if the thread combines a CRM/Attio/new-deal context with @who_is_available or "
-        "'who is available' / 'team capacity' / Russian equivalents, you MUST assign hypothesis tier 1–4 and "
-        "complexity_class — that is a Delivery capacity question on a shaped deal, not FYI-only. "
+        "Deal + availability/capacity wording on a shaped thread should yield a tier **only** when you can justify "
+        "it (six dimensions, anti-size) with **confidence ≥ 0.7**; otherwise keep tier null. "
         "When tier is set and unclear, still extract product signals (evals, languages, call, etc.); "
         "Node 3 lists people by role from Databricks when SQL is configured. "
         "Extract project type tags when they help staffing (short labels: e.g. Evals, TTS, multilingual); "
@@ -367,19 +560,20 @@ def extract_request_spec(thread_text: str, notion_excerpt: str = "") -> tuple[Re
         data = complete_json(system=system, user=user, max_tokens=4096)
         data = _normalize_llm_spec_dict(data)
         spec = RequestSpec.model_validate(data)
-        spec = apply_deal_feed_availability_tier_hint(thread_text, spec)
+        spec = apply_llm_tier_confidence_gate(spec)
+        spec = apply_narrow_staffing_thread_fallback(thread_text, spec)
         return apply_forced_tier(spec), "anthropic"
     except Exception as e:
         logger.exception("extraction failed: %s", e)
         if is_likely_deal_notification_thread(thread_text):
             logger.warning("using deal-feed RequestSpec fallback after Phase B failure")
             fb = _deal_feed_fallback_spec(thread_text, e)
-            fb = apply_deal_feed_availability_tier_hint(thread_text, fb)
+            fb = apply_narrow_staffing_thread_fallback(thread_text, fb)
             return apply_forced_tier(fb), "anthropic_fallback"
         rescue = _extraction_rescue_spec(thread_text, e)
         if rescue is not None:
             logger.warning("using staffing rescue RequestSpec after Phase B failure (explicit tier in thread)")
-            rescue = apply_deal_feed_availability_tier_hint(thread_text, rescue)
+            rescue = apply_narrow_staffing_thread_fallback(thread_text, rescue)
             return apply_forced_tier(rescue), "anthropic_rescue"
         return (
             apply_forced_tier(

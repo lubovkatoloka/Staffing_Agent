@@ -1,131 +1,69 @@
-# Node 1 — tier from thread context (for LLM prompt). Align with Project Classification Framework + Decision Logic v1.0.
-# https://www.notion.so/toloka-ai/Project-Classification-Framework-27149d0688568051b1d3e712bdf9d4e5
+# Node 1 — LLM tier prompt (CR-5: ≤90 lines, 6-dimension rubric, anti-size). Framework: URL below.
 
 framework_url: "https://www.notion.so/toloka-ai/Project-Classification-Framework-27149d0688568051b1d3e712bdf9d4e5"
 
-# Injected into Phase B system prompt after `classification_rules`. The app does not fetch Notion over HTTP;
-# the model is expected to use its knowledge of this framework from the URL + the rules below.
 framework_alignment: |
-  ### Project Classification Framework — reasoning style (`tier_rationale` / `notes`)
+  ### Framework + SCQA (`tier_rationale` / `notes`)
 
-  The **canonical** framework (Pipeline, QC/automation, Expertise, Commercial, Infra, Ownership) lives at the URL above.
-  You cannot browse Notion from here; use the **full Slack thread** (and any pasted Notion/Docs excerpts in the user message)
-  plus these rules to classify.
+  Use the **full thread** + linked excerpts. Canonical framework at URL (six dimensions below). Condensed SCQA
+  when deal context exists; keep `summary` one short paragraph. If no staffing/resourcing/capacity signal,
+  `tier` may stay null — state hypothesis + honest `confidence`.
 
-  When there is enough deal/product context — including **deal_notification** with exploration only — you may write a **condensed
-  SCQA-style** read in `tier_rationale` (and extra ambiguity / risk flags in `notes`): situation, complication (fuzzy scope,
-  unclear OTS vs managed, sourcing vs net-new data, etc.), implied question, then **Answer** as **tier (1–4)** and
-  **complexity_class (S/M/L)** with short signals mapped to framework dimensions (pipeline depth, QC, domain expertise, client tier,
-  infra). This mirrors an internal deal review, not a chat reply to the client.
+  ### Six-dimension rubric (name dimensions in `tier_rationale` when `tier` is set)
 
-  If there is **no** staffing/resourcing ask and **no** availability / capacity ping (see below), `tier` may stay **null**;
-  still give a **hypothesis** in `tier_rationale` and label uncertainty in `confidence` / `notes`.
+  1. **Pipeline** — stages, multi-surface orchestration, release cadence.
+  2. **QC / automation** — eval rigor, automation level, matrix scale.
+  3. **Expertise** — domain novelty, specialist depth, pilot vs repeat delivery.
+  4. **Commercial** — client/strategic weight, procurement, SOW complexity.
+  5. **Infra / platform** — custom infra, multi-modal / agentic stack, fleet scale.
+  6. **Ownership** — coordination load (maps to Decision Logic role mix); **not** a headcount-first shortcut.
 
-  Keep `summary` to **one short paragraph**; put longer structured reasoning in `tier_rationale` and `notes`.
+  ### Anti-size (mandatory)
 
-# Shown in Phase B system prompt — facts the model must NOT invent (SQL/HR run in the app).
+  Do **not** pick `tier` or `complexity_class` mainly from **FTE**, **headcount**, **team size**, or quoted
+  staffing numbers alone. Published FTE **bands** are **typical outcomes after** tier choice — **not** primary
+  classification evidence. Size-only or headcount-heavy text without scope signals → **lower `confidence`**
+  and usually **`tier` null**; say so in `notes`.
+
 system_boundary: |
-  You **do not** execute SQL, query Databricks, call Attio/CRM APIs, or read HiBob. You **do not** compute
-  occupation %, PTO, ghost-assignment discounts, load trends, or ranking scores. The **application** runs
-  Occupation / project_staffing / PTO queries and merges People & Tags after you output JSON.
-  Your job here is **classification and extraction only**: `thread_kind`, tier (when applicable), tags,
-  summary, and rationale — so Node 2–3 can apply Decision Logic on real data.
+  You do not run SQL/Databricks, Attio/CRM APIs, or HiBob. You do not compute occupation %, PTO, or ranking.
+  Output classification JSON only; the application merges real capacity after Phase B.
 
-# Short rules the model must apply when there is any staffing/project context:
 classification_rules: |
-  ### Step 0 — Classify the thread (`thread_kind` field)
+  ### Step 0 — `thread_kind` (required, JSON)
 
-  Set `thread_kind` **for every** thread (required field in JSON):
+  - **deal_notification** — CRM/new deal, exploration; no explicit Delivery staffing ask yet.
+  - **staffing_request** — roles, ownership, resourcing, who runs delivery.
+  - **capacity_question** — who is free / team capacity as dominant intent (may sit on a pasted deal).
+  - **unclear** — mixed/ambiguous only when there is no usable deal narrative **and** no clear intent; do not use
+    solely because the latest line is @bot if earlier lines hold deal + scope.
 
-  - **deal_notification** — New deal / Attio-style notification, client + deal name + value/stage, or BD exploration
-    (“I’m exploring…”, “will come back with details”) **without** an explicit Delivery staffing ask yet.
-  - **staffing_request** — Explicit ask: who can own/support, DPM/SoE/WFM needs, “who can join a call” for delivery,
-    headcount, ownership, or clear resourcing timeline.
-  - **capacity_question** — Primarily “who’s free?”, “team capacity”, “availability this week” **without** a specific
-    new deal staffing decision. (If the app routed to team capacity without calling you, you may not see this.)
-  - **unclear** — Mixed or ambiguous. **Do not** use unclear when the thread contains a clear
-    **deal / Attio / client + scope narrative** (even if the latest message is only @bot): set
-    **deal_notification** (or **capacity_question** if the dominant intent is “who is free / capacity” on that deal)
-    and summarize the opportunity in `summary`.
+  **Deal + availability ping:** CRM/deal context **and** `who_is_available`, "who is available", "team capacity",
+  RU equivalents — treat as capacity_question or deal_notification per dominant intent. Assign `tier` **only when**
+  you can justify it via **six dimensions** and **anti-size**; set **`confidence` ≥ 0.7** for actionable tier.
+  If you cannot, output **`tier` null** (or any tier you output with **confidence < 0.7** is cleared downstream).
 
-  **Type A (deal feed)** usually maps to **deal_notification** until someone asks to staff it.
-  **Type B (direct staffing)** maps to **staffing_request**.
-  **Type C (capacity snapshot)** maps to **capacity_question** when that is the main intent.
+  **When `tier` must be null:** no staffing/resourcing/capacity question — rewrites, FAQ, roadmaps, collateral
+  without roles/timeline/ownership.
 
-  ### Deal notification + availability ping (important)
+  **Complexity_class:** S = standard/linear pipelines (often Tier 1–2); M = multi-stage/domain pilots (often Tier 3);
+  L = flagship/custom heavy (often Tier 4).
 
-  If the thread contains **both** (a) a **CRM / new-deal / Attio-style** or structured deal context (client, value,
-  stage, scope) **and** (b) any **availability / capacity** signal aimed at Delivery — including the Slack bot handle
-  **`who_is_available`** (underscores normalize to “who is available”), plain **“who is available”**, **“team capacity”**,
-  **“кто свободен”**, **“загрузка команды”**, or **“@who_is_available”** in the thread — then this is **not** a passive
-  FYI-only deal paste. Treat it as asking whether Delivery can cover **this deal shape**.
+  **Tier bands (Decision Logic, illustrative — do not infer tier from these numbers alone):**
+  Tier 1 · S ~1.3 FTE; Tier 2 · S ~1.3 FTE (SeSe lean when `sese_path`); Tier 3 · M ~1.7 FTE; Tier 4 · L ~3 FTE.
 
-  In that case you **must** set **`tier`** to **1–4** and **`complexity_class`** to **S**, **M**, or **L** as a **hypothesis**
-  from the product scope (managed services, multi-surface QA, release cadence, geo/device matrix, etc.). Put uncertainty,
-  “needs confirmation”, or OTS vs managed gaps in **`notes`** / lower **`confidence`** — **do not** leave `tier` null **only**
-  because nobody wrote the words “staff this” or “DPM”.
+  **Tier 2 (S) vs Tier 3 (M):** Prefer Tier 3 + M for RL-gym/multi-app pilot + strategic ramp; do not map
+  "evals + apps" alone to Tier 2 when the thread shows multi-stage + domain + pilot expansion.
 
-  Prefer **`thread_kind`** = **capacity_question** when the latest user message is primarily the bot ping / capacity ask
-  on top of pasted deal context; use **deal_notification** if the feed is long but still ends with that ping.
-
-  Classify Node 1 **tier** when the thread asks for staffing, resourcing, **or** Delivery capacity / availability against
-  a **specific deal or scope** (including @who_is_available on a deal thread). Do not invent a Tier from **isolated**
-  product marketing text with **zero** staffing or availability signal.
-
-  For **deal_notification** with **no** staffing ask **and** **no** availability ping as above, set `tier` and
-  `complexity_class` to **null** and explain in `tier_rationale` / `notes`.
-
-  Complexity S / M / L (signals from Project Classification Framework):
-  - S: standard Toloka capabilities, linear workflows, automated QC, low coordination — often Tier 1–2.
-  - M: multi-stage pipelines, domain evals, several skill types, medium stakeholder load — often Tier 3.
-  - L: custom infra, agentic/multi-modal heavy R&D, strategic flagship risk, 6+ FTE — often Tier 4.
-
-  Tier mapping (Decision Logic — ownership model):
-  - Tier 1 (S): SO = DPM or WFM; + WFM + QM · ~1.3 FTE.
-  - Tier 2 (S): SO = SoE or DPM; + WFM + QM when not SeSe · ~1.3 FTE (or <1 with SeSe).
-  - Tier 3 (M): SO = SSoE or DPM; + SoE + WFM · ~1.7 FTE; domain match matters.
-  - Tier 4 (L): SO = SSoE or DPM; + SoE + WFM + SE · ~3 FTE; strategic / high-risk.
-
-  ### Tier 2 (S) vs Tier 3 (M) — choose carefully
-  - **Tier 2 (S)** — *standard Toloka pipeline*: relatively linear evals / preferences, **repeatable** scope, **low multi-stage orchestration**. Good fit when the work is "classic" pipeline delivery without heavy domain + multi-surface coordination.
-  - **Tier 3 (M)** — **multi-stage**, **domain expertise**, **several delivery surfaces** (e.g. many apps + test-case matrices + RL / agent-style harness), **strategic enterprise pilot** with a **ramp** (e.g. 12 apps → 50 → 100), procurement/SOW complexity, **DPM + SoE + WFM**-shaped ownership. **Prefer Tier 3** for:
-    - **RL Gym** / similar harness engagements, **synthetic app fleets**, multi-app workflows, 100+ test cases with breakdown rules.
-    - Flagship client **pilots** (e.g. Apple-scale) where delivery is **not** "just another preferences eval".
-    - Threads that say test cases are **~90%** but need **DPM/SoE + experts + QA** to land a **complex pilot** with **scale story** — that is **M complexity**, **Tier 3**, not Tier 2.
-
-  Do **not** default "evals + apps" to Tier 2 when the thread describes **multi-stage domain work + pilot + expansion path** — that pattern is **Tier 3** with `complexity_class` **"M"**.
-
-  Heuristics (use only as hints; justify in tier_rationale):
-  - Intro / discovery / "join a call" **with** product scope can be a staffing-related thread — infer tier from product words when someone is trying to staff or scope resourcing.
-  - Simple "evals" + **standard single-stream pipeline** → often Tier 2 (S) **only if** there is **no** multi-stage / RL-gym / strategic pilot / large multi-app matrix pattern.
-  - If text is ONLY @mentions with zero project content, tier should be null.
-  - If the **only** new text is a bare @bot ping but **earlier messages** include deal name, client,
-    requirements, or links, treat the thread as **deal_notification** (or **staffing_request** if they
-    clearly ask who runs delivery); do **not** return `thread_kind` unclear solely because the trigger
-    message has no words.
-
-  ### When `tier` MUST be null (not a staffing classification)
-  Set `tier` and `complexity_class` to **null** when the thread is **not** asking Delivery to staff people, assign owners,
-  commit capacity, **or** surface availability for a deal — **and** there is no **deal + availability ping** pattern above.
-
-  Typical **not staffing** threads (non-exhaustive):
-  - A Google Doc link + **"better phrasing"**, rewrite, FAQ, customer-facing answer, proposal wording — **no** ask for roles, headcount, dates, or "who can take this".
-  - Long **explainer** for stakeholders (how apps are built, grading is deterministic, roadmap, "ramp to N apps") **without** a resourcing question.
-  - Sharing **collateral for review** or pasting **deal narrative** where the only intent is messaging, not staffing.
-  - **Do not** infer Tier from domain keywords alone (React, evals, 100 apps, agentic) if there is **no** staffing or delivery-ownership ask.
-
-  When `tier` is null: keep `project_type_tags` empty or at most 1–2 loose labels; set `confidence` toward the low end (e.g. 0.1–0.4); use `tier_rationale` and/or `notes` to say clearly that this is not a staffing request (or that deal context is exploratory); `summary` should describe what the thread actually is in 1–2 sentences.
-
-  ### Ambiguous input
-  If deal type / offering / staffing intent is missing, set `thread_kind` to **unclear** or the best fit and use `notes` to say what is missing (e.g. OTS vs managed, or whether Delivery should staff now). Prefer `tier` null over guessing.
+  **Narrow staffing:** `narrow_staffing_scenario` = null unless **pre_sales_shape** | **call_support** |
+  **single_role**. Fill `parsed_ask_summary_en` (English). For **call_support**, set `call_support_role_tags`.
+  `include_full_team_candidates` when full/scale team language appears.
 
 output_requirements: |
-  Always set **`thread_kind`** to one of: `deal_notification`, `staffing_request`, `capacity_question`, `unclear`.
+  Always set `thread_kind`. Always fill `judge` (≤80 chars): `<client> <project_type> · <key_signal>` (no SCQA in judge).
+  `sese_path` = true only for Tier 2 SeSe lean path.
 
-  Always fill **`judge`**: a single line, max **80 characters**, format `<client> <project_type> · <key_signal>` (no SCQA prose, no Tier explanations — those belong in `tier_rationale` only). Examples: `Microsoft Copilot QA validation · 948 turns · hard May 22`; `Shopify Sidekick eval · agentic · 6-week pilot`.
+  **Confidence:** Use **`confidence` ≥ 0.7** only when tier + complexity are well supported (six dimensions, anti-size).
+  Otherwise keep **`confidence` < 0.7** and **`tier` null** / **`complexity_class` null**.
 
-  Set **`sese_path`** to **true** only when the thread clearly describes the Tier 2 **SeSe** lean staffing path (SO-only team); otherwise **false**.
-
-  If the thread **requests staffing**, **clear project resourcing**, or matches **deal + availability ping** (see classification_rules): fill `tier_rationale` (1–4 sentences), set `complexity_class` to "S", "M", or "L", and set `tier` to 1–4.
-  If the thread is **not** a staffing request **and** not a deal+availability ping: set `tier` to null, `complexity_class` to null; `tier_rationale` should explain why; `summary` describes the thread; `confidence` reflects uncertainty (lower when not staffing).
-  If ambiguous: prefer `tier` null and explain in `notes` what is missing (e.g. Tier, roles, timeline); keep `thread_kind` honest — **except** do not use null tier when the thread clearly pairs deal context with `who_is_available` / team capacity language.
+  Optional CRM: grounded `request_type`, `attio_*` fields only — never invent ids.
