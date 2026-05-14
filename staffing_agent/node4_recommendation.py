@@ -29,25 +29,24 @@ from staffing_agent.exclusions import (
 from staffing_agent.hibob import fetch_start_dates
 from staffing_agent.staffing_csv import (
     StaffingRecord,
-    is_so,
-    is_so_eligible_for_tier,
     load_staffing_records,
-    skill_match_score,
+    skill_rank_score,
+    so_eligibility_class,
 )
 
 
 class Tier3RoleBuckets(NamedTuple):
     """Primary + pickable alternates + stretch (gated) alternates for one template slot."""
 
-    primary: list[tuple[dict[str, Any], CapacityVerdict, StaffingRecord | None, int, str | None]]
-    alternate: list[tuple[dict[str, Any], CapacityVerdict, StaffingRecord | None, int, str | None]]
-    stretch_alternates: tuple[tuple[dict[str, Any], CapacityVerdict, StaffingRecord | None, int, str | None], ...]
+    primary: list[tuple[dict[str, Any], CapacityVerdict, StaffingRecord | None, float, str | None]]
+    alternate: list[tuple[dict[str, Any], CapacityVerdict, StaffingRecord | None, float, str | None]]
+    stretch_alternates: tuple[tuple[dict[str, Any], CapacityVerdict, StaffingRecord | None, float, str | None], ...]
 
 
 # Minimum alternates per section whenever a primary exists (pickable first, then gated rows).
 RECOMMENDATION_MIN_ALTERNATES = 2
 
-ScoredTuple = Tuple[dict[str, Any], CapacityVerdict, Optional[StaffingRecord], int, Optional[str]]
+ScoredTuple = Tuple[dict[str, Any], CapacityVerdict, Optional[StaffingRecord], float, Optional[str]]
 
 
 _STAGE_SHORT = {
@@ -70,20 +69,25 @@ def _band_rank(band: Band) -> int:
     return {Band.FREE: 0, Band.PARTIAL: 1, Band.AT_CAP: 2}.get(band, 9)
 
 
-def _so_rank(rec: StaffingRecord | None, *, needs_so: bool) -> int:
+def _so_rank(rec: StaffingRecord | None, *, needs_so: bool, tier: int | None) -> int:
     if not needs_so:
         return 0
-    if rec and is_so(rec.so_status):
+    if rec is None or tier is None:
+        return 2
+    cls = so_eligibility_class(rec, tier)
+    if cls == "primary":
         return 0
-    return 1
+    if cls == "stretch":
+        return 1
+    return 2
 
 
 def _so_slot_tuple(
-    it: tuple[dict[str, Any], CapacityVerdict, StaffingRecord | None, int, str | None],
+    it: tuple[dict[str, Any], CapacityVerdict, StaffingRecord | None, float, str | None],
     tier: int,
 ) -> bool:
     _r, _v, rec, _sk, _reason = it
-    return rec is not None and is_so_eligible_for_tier(rec, tier)
+    return rec is not None and so_eligibility_class(rec, tier) in ("primary", "stretch")
 
 
 def _needs_so_table_filter(project_role: str) -> bool:
@@ -101,7 +105,8 @@ def _staffing_full_scored(
     project_staffing_rows: Optional[list[dict[str, Any]]] = None,
     new_project_weight: float,
     excluded_emails: frozenset[str],
-) -> list[tuple[dict[str, Any], CapacityVerdict, StaffingRecord | None, int, str | None]]:
+    skill_rerank_by_email: Optional[Mapping[str, float]] = None,
+) -> list[tuple[dict[str, Any], CapacityVerdict, StaffingRecord | None, float, str | None]]:
     """All role-filtered candidates with CSV reasons — same sort as recommendation."""
     if not rows or tier is None or tier not in (1, 2, 3, 4):
         return []
@@ -114,22 +119,30 @@ def _staffing_full_scored(
     if not candidates:
         return []
 
-    scored: list[tuple[dict[str, Any], CapacityVerdict, StaffingRecord | None, int, str | None]] = []
+    scored: list[tuple[dict[str, Any], CapacityVerdict, StaffingRecord | None, float, str | None]] = []
+    rerank = skill_rerank_by_email or {}
     for r in candidates:
         verdict = _verdict(r)
         em = email_value(r)
         rec = staffing.get(em) if em else None
-        sk = skill_match_score(rec, project_type_tags, summary) if rec else 0
+        rr = 0.0
+        if em:
+            try:
+                rr = float(rerank.get(em, 0.0) or 0.0)
+            except (TypeError, ValueError):
+                rr = 0.0
+        sk = skill_rank_score(rec, project_type_tags, llm_rerank=rr, summary=summary) if rec else 0.0
         pr = project_role_norm(r)
         reason: str | None = None
         needs_so = _needs_so_table_filter(pr)
         if em and em in excluded_emails:
             reason = "blocked_comment"
         elif rec:
-            if needs_so and not is_so(rec.so_status):
-                # Tier 2–4: template has a dedicated *SoE* bench slot after *SO* (SoE/DPM in SO pool only via
-                # `_so_slot_tuple`). SoE-shaped people without People & Tags "SO" stay recommendable for SoE.
-                if pr != "soe" or tier not in (2, 3, 4):
+            if needs_so:
+                cls = so_eligibility_class(rec, tier)
+                if pr == "soe" and tier in (2, 3, 4):
+                    pass
+                elif cls == "ineligible":
                     reason = "not_so"
         else:
             if needs_so:
@@ -146,8 +159,8 @@ def _staffing_full_scored(
         scored.append((r, verdict, rec, sk, reason))
 
     def sort_key(
-        it: tuple[dict[str, Any], CapacityVerdict, StaffingRecord | None, int, str | None],
-    ) -> tuple[int, int, int, float, int, int]:
+        it: tuple[dict[str, Any], CapacityVerdict, StaffingRecord | None, float, str | None],
+    ) -> tuple[int, int, int, float, int, float]:
         r, verdict, rec, sk, reason = it
         pr = project_role_norm(r)
         needs_so = _needs_so_table_filter(pr)
@@ -162,7 +175,7 @@ def _staffing_full_scored(
             ps_rank,
             _band_rank(verdict.band),
             float(verdict.capacity_used),
-            _so_rank(rec, needs_so=needs_so),
+            _so_rank(rec, needs_so=needs_so, tier=tier),
             -sk,
         )
 
@@ -171,7 +184,7 @@ def _staffing_full_scored(
 
 
 def _is_pickable_tuple(
-    it: tuple[dict[str, Any], CapacityVerdict, StaffingRecord | None, int, str | None],
+    it: tuple[dict[str, Any], CapacityVerdict, StaffingRecord | None, float, str | None],
 ) -> bool:
     _r, verdict, _rec, _sk, reason = it
     if not verdict.eligible_for_new:
@@ -246,8 +259,10 @@ def _fill_slot_alternates(
 
 
 def _scored_tuple_sort_key(
-    it: tuple[dict[str, Any], CapacityVerdict, StaffingRecord | None, int, str | None],
-) -> tuple[int, int, int, float, int, int]:
+    it: tuple[dict[str, Any], CapacityVerdict, StaffingRecord | None, float, str | None],
+    *,
+    tier: int | None,
+) -> tuple[int, int, int, float, int, float]:
     r, verdict, rec, sk, reason = it
     pr = project_role_norm(r)
     needs_so = _needs_so_table_filter(pr)
@@ -262,9 +277,13 @@ def _scored_tuple_sort_key(
         ps_rank,
         _band_rank(verdict.band),
         float(verdict.capacity_used),
-        _so_rank(rec, needs_so=needs_so),
+        _so_rank(rec, needs_so=needs_so, tier=tier),
         -sk,
     )
+
+
+def _tier_sort_key(tier: int | None):
+    return lambda it: _scored_tuple_sort_key(it, tier=tier)
 
 
 def _tier3_int_setting(decision_cfg: Mapping[str, Any], key: str, *, default: int) -> int:
@@ -278,11 +297,12 @@ def _tier3_int_setting(decision_cfg: Mapping[str, Any], key: str, *, default: in
 
 
 def _tier3_team_slices(
-    scored: list[tuple[dict[str, Any], CapacityVerdict, StaffingRecord | None, int, str | None]],
+    scored: list[tuple[dict[str, Any], CapacityVerdict, StaffingRecord | None, float, str | None]],
     *,
     project_staffing_rows: list[dict[str, Any]] | None,
     decision_cfg: Mapping[str, Any],
 ) -> tuple[Tier3RoleBuckets, Tier3RoleBuckets, Tier3RoleBuckets]:
+    _t3k = _tier_sort_key(3)
     from staffing_agent.node3_project_staffing import count_active_orders_for_person
 
     cfg: Mapping[str, Any] = decision_cfg or {}
@@ -309,7 +329,7 @@ def _tier3_team_slices(
             and _so_slot_tuple(it, 3)
             and _pass_cap(name_value(it[0]), so_cap)
         ],
-        key=_scored_tuple_sort_key,
+        key=_t3k,
     )
     so_primary: list[ScoredTuple] = []
     for it in so_ordered:
@@ -331,7 +351,7 @@ def _tier3_team_slices(
             if project_role_norm(it[0]) == "soe"
             and _pass_cap(name_value(it[0]), soe_cap)
         ],
-        key=_scored_tuple_sort_key,
+        key=_t3k,
     )
     soe_primary: list[ScoredTuple] = []
     for it in soe_ordered:
@@ -354,7 +374,7 @@ def _tier3_team_slices(
             if project_role_norm(it[0]) == "wfm"
             and _pass_cap(name_value(it[0]), wfm_cap)
         ],
-        key=_scored_tuple_sort_key,
+        key=_t3k,
     )
     wfm_primary: list[ScoredTuple] = []
     for it in wfm_ordered:
@@ -371,11 +391,12 @@ def _tier3_team_slices(
 
 
 def _tier4_team_slices(
-    scored: list[tuple[dict[str, Any], CapacityVerdict, StaffingRecord | None, int, str | None]],
+    scored: list[tuple[dict[str, Any], CapacityVerdict, StaffingRecord | None, float, str | None]],
     *,
     project_staffing_rows: list[dict[str, Any]] | None,
     decision_cfg: Mapping[str, Any],
 ) -> tuple[Tier3RoleBuckets, Tier3RoleBuckets, Tier3RoleBuckets, Tier3RoleBuckets]:
+    _t4k = _tier_sort_key(4)
     from staffing_agent.node3_project_staffing import count_active_orders_for_person
 
     cfg: Mapping[str, Any] = decision_cfg or {}
@@ -403,7 +424,7 @@ def _tier4_team_slices(
             and _so_slot_tuple(it, 4)
             and _pass_cap(name_value(it[0]), so_cap)
         ],
-        key=_scored_tuple_sort_key,
+        key=_t4k,
     )
     so_primary: list[ScoredTuple] = []
     for it in so_ordered:
@@ -425,7 +446,7 @@ def _tier4_team_slices(
             if project_role_norm(it[0]) == "soe"
             and _pass_cap(name_value(it[0]), soe_cap)
         ],
-        key=_scored_tuple_sort_key,
+        key=_t4k,
     )
     soe_primary = []
     for it in soe_ordered:
@@ -448,7 +469,7 @@ def _tier4_team_slices(
             if project_role_norm(it[0]) == "wfm"
             and _pass_cap(name_value(it[0]), wfm_cap)
         ],
-        key=_scored_tuple_sort_key,
+        key=_t4k,
     )
     wfm_primary = []
     for it in wfm_ordered:
@@ -464,7 +485,7 @@ def _tier4_team_slices(
             if project_role_norm(it[0]) == "se"
             and _pass_cap(name_value(it[0]), se_cap)
         ],
-        key=_scored_tuple_sort_key,
+        key=_t4k,
     )
     se_primary = []
     for it in se_ordered:
@@ -482,8 +503,9 @@ def _tier4_team_slices(
 
 
 def _tier1_team_slices(
-    scored: list[tuple[dict[str, Any], CapacityVerdict, StaffingRecord | None, int, str | None]],
+    scored: list[tuple[dict[str, Any], CapacityVerdict, StaffingRecord | None, float, str | None]],
 ) -> tuple[Tier3RoleBuckets, Tier3RoleBuckets]:
+    _t1k = _tier_sort_key(1)
     so_ordered = sorted(
         [
             it
@@ -491,7 +513,7 @@ def _tier1_team_slices(
             if project_role_norm(it[0]) in frozenset({"dpm", "wfm"})
             and _so_slot_tuple(it, 1)
         ],
-        key=_scored_tuple_sort_key,
+        key=_t1k,
     )
     so_primary: list[ScoredTuple] = []
     for it in so_ordered:
@@ -502,7 +524,7 @@ def _tier1_team_slices(
 
     wfm_ordered = sorted(
         [it for it in scored if project_role_norm(it[0]) == "wfm"],
-        key=_scored_tuple_sort_key,
+        key=_t1k,
     )
     wfm_primary: list[ScoredTuple] = []
     for it in wfm_ordered:
@@ -518,9 +540,10 @@ def _tier1_team_slices(
 
 
 def _tier2_full_team_slices(
-    scored: list[tuple[dict[str, Any], CapacityVerdict, StaffingRecord | None, int, str | None]],
+    scored: list[tuple[dict[str, Any], CapacityVerdict, StaffingRecord | None, float, str | None]],
 ) -> tuple[Tier3RoleBuckets, Tier3RoleBuckets, Tier3RoleBuckets]:
     """Tier 2 full template: SoE/DPM (SO) + SoE bench + WFM (no parallel-order caps)."""
+    _t2k = _tier_sort_key(2)
     so_ordered = sorted(
         [
             it
@@ -528,7 +551,7 @@ def _tier2_full_team_slices(
             if project_role_norm(it[0]) in frozenset({"dpm", "soe"})
             and _so_slot_tuple(it, 2)
         ],
-        key=_scored_tuple_sort_key,
+        key=_t2k,
     )
     so_primary: list[ScoredTuple] = []
     for it in so_ordered:
@@ -545,7 +568,7 @@ def _tier2_full_team_slices(
 
     soe_ordered = sorted(
         [it for it in scored if project_role_norm(it[0]) == "soe"],
-        key=_scored_tuple_sort_key,
+        key=_t2k,
     )
     soe_primary: list[ScoredTuple] = []
     for it in soe_ordered:
@@ -563,7 +586,7 @@ def _tier2_full_team_slices(
 
     wfm_ordered = sorted(
         [it for it in scored if project_role_norm(it[0]) == "wfm"],
-        key=_scored_tuple_sort_key,
+        key=_t2k,
     )
     wfm_primary: list[ScoredTuple] = []
     for it in wfm_ordered:
@@ -580,10 +603,11 @@ def _tier2_full_team_slices(
 
 
 def _tier2_bucket_map(
-    scored: list[tuple[dict[str, Any], CapacityVerdict, StaffingRecord | None, int, str | None]],
+    scored: list[tuple[dict[str, Any], CapacityVerdict, StaffingRecord | None, float, str | None]],
     *,
     sese_path: bool,
 ) -> dict[str, Tier3RoleBuckets]:
+    _t2k = _tier_sort_key(2)
     if sese_path:
         so_ordered = sorted(
             [
@@ -592,7 +616,7 @@ def _tier2_bucket_map(
                 if project_role_norm(it[0]) in frozenset({"dpm", "soe"})
                 and _so_slot_tuple(it, 2)
             ],
-            key=_scored_tuple_sort_key,
+            key=_t2k,
         )
         so_primary: list[ScoredTuple] = []
         for it in so_ordered:
@@ -694,7 +718,7 @@ def _compact_projects_tail(crs: tuple[CapacityRow, ...]) -> str:
 
 
 def _person_lines_slim(
-    it: tuple[dict[str, Any], CapacityVerdict, StaffingRecord | None, int, str | None],
+    it: tuple[dict[str, Any], CapacityVerdict, StaffingRecord | None, float, str | None],
     *,
     new_pw: float,
     stretch_candidate: bool = False,
@@ -756,7 +780,7 @@ def _bucket_map_for_tier(
     tier: int,
     *,
     sese_path: bool,
-    scored: list[tuple[dict[str, Any], CapacityVerdict, StaffingRecord | None, int, str | None]],
+    scored: list[tuple[dict[str, Any], CapacityVerdict, StaffingRecord | None, float, str | None]],
     project_staffing_rows: list[dict[str, Any]] | None,
     decision_cfg: Mapping[str, Any],
 ) -> dict[str, Tier3RoleBuckets]:
@@ -784,7 +808,7 @@ def _build_grouped_recommendation_md(
     *,
     tier: int,
     sese_path: bool,
-    scored: list[tuple[dict[str, Any], CapacityVerdict, StaffingRecord | None, int, str | None]],
+    scored: list[tuple[dict[str, Any], CapacityVerdict, StaffingRecord | None, float, str | None]],
     decision_cfg: Mapping[str, Any],
     project_staffing_rows: Optional[list[dict[str, Any]]],
     new_pw: float,
@@ -820,6 +844,7 @@ def pickable_recommendation_rows(
     limit: int = 4,
     project_staffing_rows: Optional[list[dict[str, Any]]] = None,
     sese_path: bool = False,
+    skill_rerank_by_email: Optional[Mapping[str, float]] = None,
 ) -> list[dict[str, Any]]:
     """Capacity rows for top recommended people (same order as Slack sections)."""
     tags = project_type_tags or []
@@ -843,6 +868,7 @@ def pickable_recommendation_rows(
         project_staffing_rows=project_staffing_rows,
         new_project_weight=npw,
         excluded_emails=exr.excluded_emails,
+        skill_rerank_by_email=skill_rerank_by_email,
     )
     if tier not in (1, 2, 3, 4):
         pickable = [it for it in scored if _is_pickable_tuple(it)]
@@ -882,6 +908,7 @@ def build_project_recommendation_markdown(
     project_staffing_rows: Optional[list[dict[str, Any]]] = None,
     sese_path: bool = False,
     exclusion_result: Optional[ExclusionResult] = None,
+    skill_rerank_by_email: Optional[Mapping[str, float]] = None,
 ) -> str:
     """
     Role-grouped primary + alternates (Capacity v2 + People & Tags ranking).
@@ -939,6 +966,7 @@ def build_project_recommendation_markdown(
         project_staffing_rows=project_staffing_rows,
         new_project_weight=npw,
         excluded_emails=exr.excluded_emails,
+        skill_rerank_by_email=skill_rerank_by_email,
     )
     body = _build_grouped_recommendation_md(
         tier=tier,

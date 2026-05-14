@@ -41,6 +41,28 @@ def test_slack_brief_no_json() -> None:
     assert "```" not in b
 
 
+def test_phase_b_outline_mrkdwn_no_json() -> None:
+    s = RequestSpec(
+        tier=2,
+        complexity_class="S",
+        thread_kind="staffing_request",
+        request_type="New logo",
+        judge="Acme Corp evals",
+        project_type_tags=["Evals"],
+        summary="Short internal summary.",
+        attio_deal_name="Big Deal",
+        attio_company_name="Acme",
+        attio_deal_value="$500k",
+    )
+    out = s.phase_b_outline_mrkdwn()
+    assert "```" not in out
+    assert "{" not in out
+    assert "Kind:" in out
+    assert "Request type:" in out
+    assert "CRM:" in out
+    assert "Acme" in out
+
+
 def test_slack_block_contains_summary() -> None:
     s = RequestSpec(
         tier=2,

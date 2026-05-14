@@ -238,3 +238,47 @@ def test_empty_not_soft(cfg):
     v = assess([], on_pto_today=False, pto_upcoming=None, in_hard_exclude=False, new_project_weight=0.0, cfg=cfg)
     assert v.is_soft is False
     assert v.band == Band.FREE
+
+
+def test_scoping_handler_so_eligible_slots_and_at_risk(cfg):
+    from staffing_agent.decision.capacity import scoping_handler_so_eligible
+
+    two_scoping = [
+        _row("Tier 3", "scoping_solution_design", "ON_TRACK", "p1"),
+        _row("Tier 3", "scoping_solution_design", "ON_TRACK", "p2"),
+    ]
+    v_full = assess(
+        two_scoping,
+        on_pto_today=False,
+        pto_upcoming=None,
+        in_hard_exclude=False,
+        new_project_weight=0.0,
+        cfg=cfg,
+    )
+    row_full = {"_capacity_verdict": v_full, "_capacity_rows": tuple(two_scoping)}
+    assert v_full.scoping_count == 2
+    assert not scoping_handler_so_eligible(row_full, cfg)
+
+    one_risk = [_row("Tier 3", "building", "AT_RISK", "p9")]
+    v_risk = assess(
+        one_risk,
+        on_pto_today=False,
+        pto_upcoming=None,
+        in_hard_exclude=False,
+        new_project_weight=0.0,
+        cfg=cfg,
+    )
+    row_risk = {"_capacity_verdict": v_risk, "_capacity_rows": tuple(one_risk)}
+    assert not scoping_handler_so_eligible(row_risk, cfg)
+
+    clean = [_row("Tier 3", "scoping_solution_design", "ON_TRACK", "pz")]
+    v_ok = assess(
+        clean,
+        on_pto_today=False,
+        pto_upcoming=None,
+        in_hard_exclude=False,
+        new_project_weight=0.0,
+        cfg=cfg,
+    )
+    row_ok = {"_capacity_verdict": v_ok, "_capacity_rows": tuple(clean)}
+    assert scoping_handler_so_eligible(row_ok, cfg)

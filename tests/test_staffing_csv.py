@@ -4,6 +4,9 @@ from staffing_agent.staffing_csv import (
     is_so_eligible_for_tier,
     is_so_or_can_be_so,
     skill_match_score,
+    skill_rank_score,
+    skill_tag_intersection_size,
+    so_eligibility_class,
 )
 
 
@@ -59,6 +62,31 @@ def test_is_so_eligible_for_tier_t34_requires_senior_or_dpm_tag():
 
 def test_is_so_eligible_for_tier_not_so():
     assert is_so_eligible_for_tier(_rec(so_status="can be SO"), 2) is False
+
+
+def test_so_eligibility_class_primary_vs_stretch() -> None:
+    ok_so = _rec(so_status="SO", job_title="Senior Engineer", role_tag="")
+    assert so_eligibility_class(ok_so, 3) == "primary"
+    stretched = _rec(so_status="can be SO", job_title="Senior Engineer", role_tag="DPM")
+    assert so_eligibility_class(stretched, 3) == "stretch"
+    assert so_eligibility_class(stretched, 2) == "stretch"
+    junior_cb = _rec(so_status="can be SO", job_title="Engineer", role_tag="SSOE+SOE")
+    assert so_eligibility_class(junior_cb, 3) == "ineligible"
+
+
+def test_skill_rank_score_intersection_plus_half_llm() -> None:
+    r = StaffingRecord(
+        name="x",
+        email="x@t.com",
+        job_title="",
+        comment="",
+        role_tag="",
+        so_status="SO",
+        skills=("TTS", "Multilingual"),
+    )
+    assert skill_tag_intersection_size(r, ["TTS", "Evals"]) == 1
+    assert skill_rank_score(r, ["TTS", "Evals"], llm_rerank=1.0) == 1.5
+    assert skill_rank_score(r, ["TTS", "Evals"], llm_rerank=0.0) == 1.0
 
 
 def test_skill_match():

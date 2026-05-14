@@ -4,9 +4,13 @@ from staffing_agent.intent import (
     is_bare_slack_capacity_mention_trigger,
     is_likely_deal_notification_thread,
     is_team_capacity_query,
+    multi_roles_from_thread,
+    only_role_from_thread,
     single_role_focus_from_thread,
     slack_trigger_visible_text,
     thread_has_availability_capacity_ping,
+    thread_suggests_full_team_intent,
+    thread_suggests_pre_sales_rfp_deal_shape,
 )
 
 
@@ -92,3 +96,44 @@ def test_deal_thread_bot_handle_must_not_trigger_team_capacity() -> None:
     assert is_likely_deal_notification_thread(thread)
     assert not is_team_capacity_query(thread)
     assert is_team_capacity_query(thread + "\nPlease share **team capacity** snapshot.")
+
+
+def test_thread_suggests_full_team_intent_english_hints() -> None:
+    assert thread_suggests_full_team_intent("Need a full team for the Shopify pilot")
+    assert thread_suggests_full_team_intent("Who is free — we need team for scale on this")
+    assert thread_suggests_full_team_intent("project team for the rollout")
+    assert not thread_suggests_full_team_intent("Need one SoE for tier 3")
+    assert not thread_suggests_full_team_intent("")
+
+
+def test_only_role_from_thread_wfm() -> None:
+    assert only_role_from_thread("Team capacity — only WFM please") == "wfm"
+    assert only_role_from_thread("only SOE for this chase") == "soe"
+
+
+def test_only_role_from_thread_soe_before_so() -> None:
+    assert only_role_from_thread("only soe and nobody else") == "soe"
+
+
+def test_only_role_none_without_keyword() -> None:
+    assert only_role_from_thread("need a DPM for tier 2") is None
+
+
+def test_multi_roles_from_thread_ordered_with_conjunctive() -> None:
+    assert multi_roles_from_thread("need SoE and DPM for tier 3") == ["soe", "dpm"]
+    assert multi_roles_from_thread("Looking for WFM, QM — staffing help") == ["wfm", "qm"]
+
+
+def test_multi_roles_from_thread_rejects_or_and_team_capacity() -> None:
+    assert multi_roles_from_thread("need SoE or DPM for tier 3") == []
+    assert multi_roles_from_thread("Team capacity — need SoE, DPM") == []
+
+
+def test_rfp_shape_excludes_loose_team_capacity_heuristic() -> None:
+    """Marketing/proposal language must not route to org-wide capacity when thread is RFP-shaped."""
+    t = (
+        "Responding to a customer RFP for evaluation pipelines. "
+        "What's our team capacity — who might be available to join scoping calls?"
+    )
+    assert thread_suggests_pre_sales_rfp_deal_shape(t)
+    assert not is_team_capacity_query(t)

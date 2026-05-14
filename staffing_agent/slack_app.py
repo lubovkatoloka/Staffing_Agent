@@ -16,6 +16,7 @@ from slack_sdk import WebClient
 
 from staffing_agent.extraction import extract_request_spec, mock_llm_reason, uses_mock_llm
 from staffing_agent.paste_run import build_slack_mention_reply
+from staffing_agent.thread_dedup import classify_mention_dedup
 from staffing_agent.thread_context import (
     exclude_bot_user_messages,
     format_thread_preview,
@@ -159,6 +160,15 @@ def create_app() -> App:
         messages = exclude_bot_user_messages(messages, bot_uid)
 
         thread_plain = format_thread_preview(messages)
+        dedup = classify_mention_dedup(channel, root_ts, thread_plain)
+        if dedup == "duplicate":
+            client.chat_postMessage(
+                channel=channel,
+                thread_ts=root_ts,
+                text="Already answered — same thread within the last minute.",
+            )
+            return
+
         print(
             "[staffing] Notion + Google Docs: fetching linked previews (if any; may take a few seconds)…",
             file=sys.stderr,
@@ -187,7 +197,8 @@ def create_app() -> App:
         )
         logger.info("extraction finished in %.1fs source=%s", elapsed, src)
         src_label = {
-            "mock": "mock (set ANTHROPIC_API_KEY; unset STAFFING_AGENT_MOCK_LLM)",
+            "mock": "mock (STAFFING_AGENT_MOCK_LLM=1; no Opus)",
+            "llm_unavailable": "LLM unavailable (missing ANTHROPIC_API_KEY)",
             "anthropic": "Anthropic Opus",
             "anthropic_fallback": "Anthropic failed — deal-feed heuristic summary",
             "anthropic_rescue": "Anthropic/JSON failed — tier recovered from thread text",
@@ -208,6 +219,10 @@ def create_app() -> App:
             thread_plain=thread_plain,
             trigger_message_text=(event.get("text") or None),
         )
+        if dedup == "updated":
+            replies = list(replies)
+            if replies:
+                replies[0] = "*Updated based on new context:*\n\n" + replies[0]
 
         try:
             for reply in replies:
@@ -240,7 +255,7 @@ def run_socket_mode() -> None:
     app = create_app()
     if uses_mock_llm():
         print(
-            f"[staffing] LLM: MOCK — {mock_llm_reason()} "
+            f"[staffing] LLM: not live — {mock_llm_reason()} "
             "(fix .env, then restart the bot — env is read only at process start).",
             flush=True,
             file=sys.stderr,

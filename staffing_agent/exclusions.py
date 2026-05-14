@@ -29,6 +29,9 @@ NOTION_DATA_SOURCE_ID = os.environ.get(
 
 STAFFING_POOL_ROLES = frozenset({"DPM", "SSOE+SOE", "WFM+WFC", "QC+QM", "SE"})
 
+# Call-support narrow slice (Phase B `call_support_role_tags`); People & Tags labels.
+_CALL_SUPPORT_FILTER_TAGS = frozenset({"SSOE+SOE", "DPM", "SOE"})
+
 HARD_EXCLUDE_PHRASES = (
     "do not staff",
     "do not use",
@@ -109,6 +112,56 @@ def slack_exclusion_unavailable_message(*, title: str = "Staffing", detail: str 
     if detail:
         body += "\n" + detail
     return body
+
+
+def _role_tag_parts_upper(role_tag: str) -> list[str]:
+    raw = (role_tag or "").strip()
+    if not raw:
+        return []
+    parts = [x.strip().upper() for x in re.split(r"[,;/]", raw) if x.strip()]
+    return parts if parts else [raw.upper()]
+
+
+def normalize_call_support_role_tags(tags: list[Any]) -> list[str]:
+    """Dedupe Phase B tag list to canonical SSOE+SOE | DPM | SOE."""
+    out: list[str] = []
+    for x in tags or []:
+        s = str(x).strip().upper().replace(" ", "")
+        if s in ("SSOE_SOE", "SSOE/SOE"):
+            s = "SSOE+SOE"
+        if s in _CALL_SUPPORT_FILTER_TAGS and s not in out:
+            out.append(s)
+    return out
+
+
+def role_tag_matches_call_support_filter(role_tag: str, tag: str) -> bool:
+    """
+    Whether a People & Tags ``role_tag`` string belongs to the call_support slice ``tag``.
+
+    - **DPM** — tag part DPM.
+    - **SSOE+SOE** — explicit combined label in role_tag parts.
+    - **SOE** — mapped project role includes ``soe`` (covers SSOE+SOE rows and SoE-shaped tags).
+    """
+    t = (tag or "").strip().upper()
+    if t not in _CALL_SUPPORT_FILTER_TAGS:
+        return False
+    parts = _role_tag_parts_upper(role_tag)
+    if t == "DPM":
+        return "DPM" in parts
+    if t == "SSOE+SOE":
+        return "SSOE+SOE" in parts
+    if t == "SOE":
+        prs = project_roles_for_notion_tag(role_tag)
+        return "soe" in prs
+    return False
+
+
+def record_matches_any_call_support_tag(role_tag: str, tags: list[str]) -> bool:
+    """True if ``role_tag`` matches any normalized call_support filter label."""
+    for tag in tags:
+        if role_tag_matches_call_support_filter(role_tag, tag):
+            return True
+    return False
 
 
 def project_roles_for_notion_tag(tag: str) -> frozenset[str]:

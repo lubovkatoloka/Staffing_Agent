@@ -4,8 +4,8 @@ Load Notion-export CSV (People & Tags) and match to Occupation rows by email.
 Rules (product):
 - Hard exclusions (Comment phrases like do not staff / onboarding) come from live Notion via
   ``staffing_agent.exclusions`` — not from this CSV.
-- SO Status: **Primary SO pool** uses exact **SO** only (`is_so`). **can be SO** is a pipeline marker
-  — use `is_so_or_can_be_so` only where stretch/future ranking is intentional (not primary SO bucket).
+- SO Status: **Primary** = exact **SO** in People & Tags + tier rules. **can be SO** is a **stretch / fallback**
+  after confirmed SO in the same pool when tier rules pass — see `so_eligibility_class`.
 - Skills: overlap with Phase B `project_type_tags` + thread summary for ranking.
 """
 
@@ -16,7 +16,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Optional
+from typing import Any, Literal, Mapping, Optional
 
 import yaml
 
@@ -105,10 +105,7 @@ def is_so(so_status: str) -> bool:
     return (so_status or "").strip().lower() == "so"
 
 
-def is_so_eligible_for_tier(rec: StaffingRecord, tier: int) -> bool:
-    """SO slot eligibility by tier (People & Tags + job title)."""
-    if not is_so(rec.so_status):
-        return False
+def _so_tier_rules_satisfied(rec: StaffingRecord, tier: int) -> bool:
     if tier in (1, 2):
         return True
     if tier in (3, 4):
@@ -126,6 +123,29 @@ def is_so_eligible_for_tier(rec: StaffingRecord, tier: int) -> bool:
     return False
 
 
+def is_so_eligible_for_tier(rec: StaffingRecord, tier: int) -> bool:
+    """Confirmed SO only — same tier bar as primary in :func:`so_eligibility_class`."""
+    return is_so(rec.so_status) and _so_tier_rules_satisfied(rec, tier)
+
+
+def so_eligibility_class(
+    rec: StaffingRecord,
+    tier: int | None,
+) -> Literal["ineligible", "primary", "stretch"]:
+    """
+    SO bench eligibility: **primary** (exact SO), **stretch** (can be SO fallback), or **ineligible**.
+    """
+    if tier is None or tier not in (1, 2, 3, 4):
+        return "ineligible"
+    if not is_so_or_can_be_so(rec.so_status):
+        return "ineligible"
+    if not _so_tier_rules_satisfied(rec, tier):
+        return "ineligible"
+    if is_so(rec.so_status):
+        return "primary"
+    return "stretch"
+
+
 def is_so_or_can_be_so(so_status: str) -> bool:
     """Stretch / ranking: SO or can be SO (do not use for primary SO bucket)."""
     s = (so_status or "").strip().lower()
@@ -138,15 +158,35 @@ def is_so_or_can_be_so(so_status: str) -> bool:
     return False
 
 
+def skill_tag_intersection_size(record: StaffingRecord, project_type_tags: list[str]) -> int:
+    """|∩| — count of project tags that match CSV skills (substring / token overlap)."""
+    if not record.skills or not project_type_tags:
+        return 0
+    sk_list = [s.strip().lower() for s in record.skills if s.strip()]
+    n = 0
+    for tag in project_type_tags:
+        tl = (tag or "").strip().lower()
+        if len(tl) < 2:
+            continue
+        if any(tl == sl or tl in sl or sl in tl for sl in sk_list):
+            n += 1
+            continue
+        tw = [w for w in tl.split() if len(w) > 2]
+        if tw and any(w in sl for sl in sk_list for w in tw):
+            n += 1
+    return n
+
+
 def skill_match_score(
     record: StaffingRecord,
     project_type_tags: list[str],
     summary: str,
 ) -> int:
-    """Higher is better tag/skill overlap with the project."""
+    """Legacy integer score; prefer :func:`skill_rank_score` for Node 4 ordering."""
+    base = skill_tag_intersection_size(record, project_type_tags)
     blob = f"{summary or ''} " + " ".join(project_type_tags or [])
     blob_l = blob.lower()
-    score = 0
+    score = base * 4
     for tag in project_type_tags:
         tl = (tag or "").strip().lower()
         if len(tl) < 2:
@@ -167,3 +207,22 @@ def skill_match_score(
         if len(sl) > 3 and sl in blob_l:
             score += 2
     return score
+
+
+def skill_rank_score(
+    record: StaffingRecord | None,
+    project_type_tags: list[str],
+    *,
+    llm_rerank: float = 0.0,
+    summary: str = "",
+) -> float:
+    """CR-8: |∩| + 0.5 × LLM rerank (rerank clamped to 0..1). ``summary`` unused; kept for call compatibility."""
+    _ = summary
+    if not record:
+        return 0.0
+    try:
+        rr = float(llm_rerank)
+    except (TypeError, ValueError):
+        rr = 0.0
+    rr = max(0.0, min(1.0, rr))
+    return float(skill_tag_intersection_size(record, project_type_tags)) + 0.5 * rr

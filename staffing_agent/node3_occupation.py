@@ -11,7 +11,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Mapping, Optional
 
 from staffing_agent.capacity_runtime import (
     default_new_project_weight,
@@ -129,6 +129,7 @@ def node3_slack_markdown(
     project_type_tags: Optional[list[str]] = None,
     summary: str = "",
     sese_path: bool = False,
+    skill_rerank_by_email: Optional[Mapping[str, float]] = None,
 ) -> str:
     """Run sql/capacity.sql; return Slack mrkdwn."""
     cfg = load_decision_config()
@@ -285,6 +286,7 @@ def node3_slack_markdown(
             project_staffing_rows=project_staffing_snapshot,
             sese_path=sese_path,
             exclusion_result=exr,
+            skill_rerank_by_email=skill_rerank_by_email,
         )
         if minimal:
             return rec

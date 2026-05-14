@@ -376,6 +376,45 @@ def test_skill_ranking_with_tags():
     assert so_seg.index("A") < so_seg.index("B")
 
 
+def test_tier2_so_line_orders_primary_so_before_can_be_so() -> None:
+    cfg = load_decision_config()
+    staffing = {
+        "stretch@t.com": _so("stretch@t.com", so_status="can be SO"),
+        "primary@t.com": _so("primary@t.com", so_status="SO"),
+    }
+    p = _proj("p1", "Same", tier="Tier 2")
+    rows = [
+        _person("stretch@t.com", "StretchNm", "soe", cfg, 2, p),
+        _person("primary@t.com", "PrimaryNm", "soe", cfg, 2, p),
+    ]
+    text = build_project_recommendation_markdown(rows, tier=2, decision_cfg=cfg, staffing_by_email=staffing)
+    so_seg = text.split("*SO Recommendations*", 1)[1].split("*SoE Recommendations*", 1)[0]
+    assert so_seg.index("PrimaryNm") < so_seg.index("StretchNm")
+
+
+def test_skill_rerank_boosts_within_so_slice() -> None:
+    cfg = load_decision_config()
+    staffing = {
+        "a@test.com": _so("a@test.com", skills=("TTS",)),
+        "b@test.com": _so("b@test.com", skills=("TTS",)),
+    }
+    rows = [
+        _person("b@test.com", "B", "soe", cfg, 2, _proj("b", "B", tier="Tier 2")),
+        _person("a@test.com", "A", "soe", cfg, 2, _proj("a", "A", tier="Tier 2")),
+    ]
+    text = build_project_recommendation_markdown(
+        rows,
+        tier=2,
+        decision_cfg=cfg,
+        staffing_by_email=staffing,
+        project_type_tags=["TTS"],
+        summary="eval",
+        skill_rerank_by_email={"a@test.com": 1.0, "b@test.com": 0.0},
+    )
+    so_seg = text.split("*SO Recommendations*", 1)[1].split("*SoE Recommendations*", 1)[0]
+    assert so_seg.index("A") < so_seg.index("B")
+
+
 def test_upcoming_pto_renders_marker_in_recommendation():
     cfg = load_decision_config()
     staffing = {"a@t.com": _so("a@t.com")}

@@ -6,7 +6,7 @@ Source spec: https://www.notion.so/34b49d06885681468dd6d79d2e16d332
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Mapping, Optional
+from typing import Any, Mapping, Optional
 
 from staffing_agent.decision.enums import Band, IneligibleReason, SoftReason
 
@@ -186,3 +186,28 @@ def assess(
         eligible_for_new=eligible,
         ineligible_reason=ineligible_reason,
     )
+
+
+def scoping_handler_so_eligible(row: Mapping[str, Any], decision_cfg: Mapping[str, Any]) -> bool:
+    """Pre-sales / RFP SO bench (S2): room for another scoping engagement, no AT_RISK projects.
+
+    Uses ``config/decision_logic.yaml`` → ``scoping.max_slots_per_person`` (must have
+    ``scoping_count < max_slots``). Always blocks any project in **AT_RISK**; when
+    ``blocked_if_any_at_risk_or_behind`` is true, **BEHIND** also blocks.
+    """
+    v = row.get("_capacity_verdict")
+    if not isinstance(v, CapacityVerdict):
+        return False
+    sc = (decision_cfg or {}).get("scoping") or {}
+    max_slots = int(sc.get("max_slots_per_person", 2))
+    if v.scoping_count >= max_slots:
+        return False
+    block_behind = bool(sc.get("blocked_if_any_at_risk_or_behind", True))
+    crs = tuple(row.get("_capacity_rows") or ())
+    for cr in crs:
+        st = _norm_status(getattr(cr, "status", "") or "")
+        if st == "AT_RISK":
+            return False
+        if block_behind and st == "BEHIND":
+            return False
+    return True

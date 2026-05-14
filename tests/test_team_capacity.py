@@ -378,3 +378,76 @@ def test_upcoming_pto_marker_in_team_capacity(monkeypatch: pytest.MonkeyPatch) -
     assert "PTO 2026-05-15" in text
     assert "⚠️" not in text
 
+
+def test_scoping_so_handler_filters_so_bench(monkeypatch: pytest.MonkeyPatch) -> None:
+    """S2: pre-sales SO mode drops ≥2 scoping rows or any AT_RISK project."""
+    cfg = load_decision_config()
+    good = _person(
+        "g@t.com",
+        "Good SoE",
+        "soe",
+        cfg,
+        _proj("p1", "P1", tier="Tier 2", stage="scoping_solution_design", status="ON_TRACK"),
+    )
+    at_risk = _person(
+        "r@t.com",
+        "Risk DPM",
+        "dpm",
+        cfg,
+        _proj("p2", "P2", tier="Tier 2", stage="building", status="AT_RISK"),
+    )
+    staffing = {
+        "g@t.com": StaffingRecord(
+            name="Good", email="g@t.com", job_title="", comment="", role_tag="", so_status="SO", skills=()
+        ),
+        "r@t.com": StaffingRecord(
+            name="Risk", email="r@t.com", job_title="", comment="", role_tag="", so_status="SO", skills=()
+        ),
+    }
+    monkeypatch.setattr("staffing_agent.team_capacity.load_staffing_records", lambda: staffing)
+    text_all = "\n".join(
+        build_team_capacity_markdown([good, at_risk], decision_cfg=cfg, only_role="so")
+    )
+    assert "Good SoE" in text_all
+    assert "Risk DPM" in text_all
+
+    text_s2 = "\n".join(
+        build_team_capacity_markdown(
+            [good, at_risk],
+            decision_cfg=cfg,
+            only_role="so",
+            scoping_so_handler=True,
+        )
+    )
+    assert "Good SoE" in text_s2
+    assert "Risk DPM" not in text_s2
+
+
+def test_only_role_compact_shortlist_has_primary_and_alternates(monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = load_decision_config()
+    rows = [
+        _person("a@t.com", "A1", "soe", cfg, _proj("p1", "P1", tier="Tier 2")),
+        _person("b@t.com", "B2", "soe", cfg, _proj("p2", "P2", tier="Tier 2")),
+        _person("c@t.com", "C3", "soe", cfg, _proj("p3", "P3", tier="Tier 2")),
+    ]
+    staffing = {
+        "a@t.com": StaffingRecord(
+            name="A1", email="a@t.com", job_title="", comment="", role_tag="", so_status="SO", skills=()
+        ),
+        "b@t.com": StaffingRecord(
+            name="B2", email="b@t.com", job_title="", comment="", role_tag="", so_status="SO", skills=()
+        ),
+        "c@t.com": StaffingRecord(
+            name="C3", email="c@t.com", job_title="", comment="", role_tag="", so_status="SO", skills=()
+        ),
+    }
+    monkeypatch.setattr("staffing_agent.team_capacity.load_staffing_records", lambda: staffing)
+    text = build_team_capacity_markdown(
+        rows,
+        decision_cfg=cfg,
+        only_role="soe",
+        role_shortlist_compact=True,
+    )[0]
+    assert "*Primary*" in text
+    assert "*Alternates*" in text
+    assert "A1" in text

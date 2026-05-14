@@ -14,6 +14,7 @@ from staffing_agent.config_loader import load_decision_config, load_tier_classif
 from staffing_agent.intent import (
     is_likely_deal_notification_thread,
     is_team_capacity_query,
+    multi_roles_from_thread,
     single_role_focus_from_thread,
     thread_has_availability_capacity_ping,
     thread_suggests_full_team_intent,
@@ -270,21 +271,48 @@ def _normalize_llm_spec_dict(data: dict[str, Any]) -> dict[str, Any]:
         out["call_support_role_tags"] = []
     else:
         out["call_support_role_tags"] = [str(x).strip() for x in ctags if str(x).strip()]
-    nsr = out.get("narrow_single_role")
     nsr_allowed = frozenset({"so", "soe", "dpm", "wfm", "qm", "se"})
+    role_alias = {
+        "ssoe": "soe",
+        "ssoe+soe": "soe",
+        "solution_engineer": "soe",
+        "accountable_so": "so",
+        "so_pool": "so",
+    }
+    nsr = out.get("narrow_single_role")
     if nsr is None or (isinstance(nsr, str) and not str(nsr).strip()):
         out["narrow_single_role"] = None
     else:
         raw_nsr = str(nsr).strip().lower().replace(" ", "_").replace("-", "_")
-        alias = {
-            "ssoe": "soe",
-            "ssoe+soe": "soe",
-            "solution_engineer": "soe",
-            "accountable_so": "so",
-            "so_pool": "so",
-        }
-        raw_nsr = alias.get(raw_nsr, raw_nsr)
+        raw_nsr = role_alias.get(raw_nsr, raw_nsr)
         out["narrow_single_role"] = raw_nsr if raw_nsr in nsr_allowed else None
+    nmr = out.get("narrow_multi_roles")
+    if nmr is None:
+        out["narrow_multi_roles"] = []
+    elif isinstance(nmr, str) and str(nmr).strip():
+        parts = re.split(r"[,;/]", str(nmr).strip())
+        seq = [p.strip() for p in parts if p.strip()]
+        clean_mr: list[str] = []
+        seen_mr: set[str] = set()
+        for x in seq:
+            raw = str(x).strip().lower().replace(" ", "_").replace("-", "_")
+            raw = role_alias.get(raw, raw)
+            if raw in nsr_allowed and raw not in seen_mr:
+                seen_mr.add(raw)
+                clean_mr.append(raw)
+        out["narrow_multi_roles"] = clean_mr[:6]
+    elif not isinstance(nmr, list):
+        out["narrow_multi_roles"] = []
+    else:
+        clean_mr2: list[str] = []
+        seen_mr2: set[str] = set()
+        for x in nmr:
+            raw = str(x).strip().lower().replace(" ", "_").replace("-", "_")
+            raw = role_alias.get(raw, raw)
+            if raw in nsr_allowed and raw not in seen_mr2:
+                seen_mr2.add(raw)
+                clean_mr2.append(raw)
+        out["narrow_multi_roles"] = clean_mr2[:6]
     for ak in _ATTIO_SPEC_STRING_FIELDS:
         v = out.get(ak)
         if v is None:
@@ -292,6 +320,21 @@ def _normalize_llm_spec_dict(data: dict[str, Any]) -> dict[str, Any]:
         else:
             s = str(v).strip()
             out[ak] = s[:2000] if len(s) > 2000 else s
+    srb = out.get("skill_rerank_by_email")
+    if isinstance(srb, dict):
+        norm_sr: dict[str, float] = {}
+        for k, v in srb.items():
+            ek = str(k).strip().lower()
+            if not ek or ek.count("@") != 1:
+                continue
+            try:
+                fv = float(v)
+            except (TypeError, ValueError):
+                continue
+            norm_sr[ek] = max(0.0, min(1.0, fv))
+        out["skill_rerank_by_email"] = norm_sr
+    elif "skill_rerank_by_email" in out:
+        out.pop("skill_rerank_by_email", None)
     return out
 
 
@@ -359,6 +402,23 @@ def apply_narrow_staffing_thread_fallback(thread_text: str, spec: RequestSpec) -
         "se": "SE",
     }
     if not is_team_capacity_query(tp):
+        mroles = multi_roles_from_thread(tp)
+        if len(mroles) >= 2:
+            if spec.tier is not None and thread_suggests_full_team_intent(tp):
+                return spec
+            pa0 = (spec.parsed_ask_summary_en or "").strip()
+            if not pa0:
+                pa0 = (
+                    f"Narrow ask: role shortlists for {', '.join(mroles)} "
+                    "(auto-detected — prefer `narrow_multi_roles` from extraction)."
+                )
+            return spec.model_copy(
+                update={
+                    "narrow_staffing_scenario": "single_role",
+                    "narrow_multi_roles": mroles,
+                    "parsed_ask_summary_en": pa0[:1200],
+                }
+            )
         role = single_role_focus_from_thread(tp)
         if role in _role_labels:
             if spec.tier is not None and thread_suggests_full_team_intent(tp):

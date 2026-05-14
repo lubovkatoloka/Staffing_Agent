@@ -15,7 +15,10 @@ from staffing_agent.exclusions import (
     ExclusionUnavailableError,
     format_excluded_comment_block,
     match_hard_exclude,
+    normalize_call_support_role_tags,
+    record_matches_any_call_support_tag,
     reset_exclusion_store,
+    role_tag_matches_call_support_filter,
 )
 
 
@@ -259,3 +262,20 @@ def test_format_onboarding_only_includes_role_overlap() -> None:
     text = format_excluded_comment_block(res, frozenset({"soe"}))
     assert "Ann" in text
     assert "Bob" not in text
+
+
+def test_normalize_call_support_role_tags() -> None:
+    assert normalize_call_support_role_tags(["dpm", "SSOE_SOE", "dpm"]) == ["DPM", "SSOE+SOE"]
+    assert normalize_call_support_role_tags(["soe", "junk"]) == ["SOE"]
+
+
+def test_role_tag_matches_call_support_filter() -> None:
+    assert role_tag_matches_call_support_filter("SSOE+SOE", "SSOE+SOE")
+    assert role_tag_matches_call_support_filter("DPM", "DPM")
+    assert role_tag_matches_call_support_filter("SSOE+SOE", "SOE")
+    assert not role_tag_matches_call_support_filter("DPM", "SSOE+SOE")
+
+
+def test_record_matches_any_call_support_tag() -> None:
+    assert record_matches_any_call_support_tag("SSOE+SOE / DPM", ["DPM"])
+    assert record_matches_any_call_support_tag("SSOE+SOE", ["SSOE+SOE", "DPM"])

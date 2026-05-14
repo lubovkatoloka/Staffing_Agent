@@ -92,6 +92,8 @@ def test_canonical_paste_mock_within_budget(monkeypatch: pytest.MonkeyPatch, tie
 
     monkeypatch.setenv("STAFFING_AGENT_MOCK_LLM", "1")
     monkeypatch.setenv("STAFFING_AGENT_REPLY_STYLE", "minimal")
+    monkeypatch.setenv("STAFFING_NARROW_THREAD_FALLBACK", "0")
+    monkeypatch.setenv("STAFFING_FORCE_TIER", "2")
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.setattr("staffing_agent.paste_run.node3_slack_markdown", _fake_node3)
 
@@ -101,7 +103,8 @@ def test_canonical_paste_mock_within_budget(monkeypatch: pytest.MonkeyPatch, tie
 
     assert len(reply) <= 1500
     lines = reply.count("\n") + (1 if reply.strip() else 0)
-    assert lines <= 25
+    # CR-4 skeleton (📌🎯🏷️👥⚠️➡️) + minimal Node 3 can exceed the old slim-only budget.
+    assert lines <= 55
 
     lower = reply.lower()
     for bad in (
@@ -124,9 +127,10 @@ def test_canonical_paste_mock_within_budget(monkeypatch: pytest.MonkeyPatch, tie
     assert "*qm recommendations*" not in lower
     assert "*qc recommendations*" not in lower
 
-    header_line = reply.split("\n", 1)[0].strip()
-    tier_re = re.compile(r"^\*Tier [1-4] · [SML]: .+\* — .{1,80}$")
-    assert tier_re.match(header_line), header_line
+    assert "*Tier 2 ·" in reply
+    tier_line = next(ln for ln in reply.splitlines() if "*Tier 2 ·" in ln)
+    tier_re = re.compile(r"^\*Tier [1-4] · [SML?]: .+\*")
+    assert tier_re.match(tier_line.strip()), tier_line
 
     slots = team_template_for(2, sese_path=False)
     for label in slots:

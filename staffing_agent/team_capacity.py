@@ -17,6 +17,7 @@ from staffing_agent.capacity_runtime import prepare_rows_for_recommendation
 from staffing_agent.config_loader import load_decision_config
 from staffing_agent.databricks_cli import databricks_profile
 from staffing_agent.decision import CapacityVerdict
+from staffing_agent.decision.capacity import scoping_handler_so_eligible
 from staffing_agent.decision.enums import Band
 from staffing_agent.node3_occupation import (
     MIN_CAPACITY_SQL_LEN,
@@ -35,6 +36,8 @@ from staffing_agent.exclusions import (
     ExclusionUnavailableError,
     format_excluded_comment_block,
     get_exclusion_store,
+    normalize_call_support_role_tags,
+    record_matches_any_call_support_tag,
     project_roles_for_notion_tag,
     slack_exclusion_unavailable_message,
 )
@@ -49,9 +52,9 @@ from staffing_agent.format_utils import (
 from staffing_agent.hibob import fetch_start_dates
 from staffing_agent.staffing_csv import (
     StaffingRecord,
-    is_so,
     is_so_eligible_for_tier,
     load_staffing_records,
+    so_eligibility_class,
 )
 
 _SHOW_LOAD = os.environ.get("STAFFING_AGENT_SHOW_LOAD", "").strip().lower() in (
@@ -384,6 +387,89 @@ def _non_hold_freeish_pool_pairs(
     return out
 
 
+def _fmt_role_shortlist_compact(
+    title: str,
+    pairs: list[tuple[dict[str, Any], Band]],
+    *,
+    subtitle: str = "",
+    gate_tier: int,
+    ps_rows: list[dict[str, Any]] | None,
+    cfg: Mapping[str, Any],
+    staffing: dict[str, StaffingRecord],
+    primary_n: int = 1,
+    alternate_n: int = 2,
+    sort_so_bench: bool = False,
+) -> list[str]:
+    """S3: top pick + alternates from FREE/PARTIAL snapshot-pass rows (not full sub-band layout)."""
+    nh = _non_hold_freeish_pool_pairs(pairs, gate_tier, ps_rows, cfg)
+
+    def sk(t: tuple[dict[str, Any], Band]) -> tuple[int, int, float, str]:
+        r, lb = t
+        so_sub = 0
+        if sort_so_bench:
+            em0 = (email_value(r) or "").strip().lower()
+            rec0 = staffing.get(em0) if em0 else None
+            pr0 = project_role_norm(r)
+            if rec0 and pr0 in ("soe", "dpm"):
+                cl = so_eligibility_class(rec0, gate_tier)
+                if cl == "stretch":
+                    so_sub = 1
+                elif cl == "ineligible":
+                    so_sub = 2
+        br = 0 if lb == Band.FREE else 1
+        v = _verdict(r)
+        return (so_sub, br, float(v.capacity_used), name_value(r).lower())
+
+    ordered = sorted(nh, key=sk)
+    picked: list[tuple[dict[str, Any], Band]] = []
+    seen: set[str] = set()
+    cap_n = max(0, primary_n) + max(0, alternate_n)
+    for t in ordered:
+        em = ((email_value(t[0]) or "").strip().lower()) or name_value(t[0]).lower()
+        if em in seen:
+            continue
+        seen.add(em)
+        picked.append(t)
+        if len(picked) >= cap_n:
+            break
+
+    sec: list[str] = [f"*{title}*"]
+    if subtitle:
+        sec.append(subtitle)
+    if not picked:
+        sec.append("_No pickable people in FREE/PARTIAL for this slice (load / snapshot / PTO)._")
+        return sec
+
+    prim = picked[:primary_n] if primary_n > 0 else []
+    alts = picked[primary_n : primary_n + alternate_n] if alternate_n > 0 else []
+
+    sec.append(
+        f"_Up to *{primary_n}* primary and *{alternate_n}* alternates "
+        "(FREE/PARTIAL, snapshot-pass)._"
+    )
+    if prim:
+        sec.append("*Primary*")
+        for r, lb in prim:
+            bl = band_label_for_slack(lb)
+            ok, rcode = _snapshot_gate_outcome(ps_rows, r, gate_tier, cfg)
+            suf = ""
+            if ok and rcode == "ps_scoping_discovery_only":
+                suf = f" _({gate_reason_label(rcode)})_"
+            sec.append(f"• {name_value(r)} — `{bl}`{_risk_and_pto_headline(r)}{suf}")
+            sec.append(f"   {_projects_detail_line_full(r)}")
+    if alts:
+        sec.append("*Alternates*")
+        for r, lb in alts:
+            bl = band_label_for_slack(lb)
+            ok, rcode = _snapshot_gate_outcome(ps_rows, r, gate_tier, cfg)
+            suf = ""
+            if ok and rcode == "ps_scoping_discovery_only":
+                suf = f" _({gate_reason_label(rcode)})_"
+            sec.append(f"• {name_value(r)} — `{bl}`{_risk_and_pto_headline(r)}{suf}")
+            sec.append(f"   {_projects_detail_line_full(r)}")
+    return sec
+
+
 def _pool_free_partial_counts(
     pairs: list[tuple[dict[str, Any], Band]],
     gate_tier: int,
@@ -674,6 +760,11 @@ def build_team_capacity_markdown(
     decision_cfg: Optional[Mapping[str, Any]] = None,
     project_staffing_rows: Optional[list[dict[str, Any]]] = None,
     only_role: Optional[str] = None,
+    role_shortlist_title: Optional[str] = None,
+    role_shortlist_subtitle: Optional[str] = None,
+    notion_tag_shortlist: Optional[list[str]] = None,
+    scoping_so_handler: bool = False,
+    role_shortlist_compact: bool = False,
     _consistency_sink: Optional[list[tuple[frozenset[str], frozenset[str]]]] = None,
 ) -> list[str]:
     """
@@ -682,6 +773,16 @@ def build_team_capacity_markdown(
     Full team capacity returns ``[overview, *detail_chunks]`` (one or more detail messages if long).
 
     ``only_role`` — if set to ``so``/``soe``/``dpm``/``wfm``/``qm``/``se``, return only that slice.
+
+    ``role_shortlist_title`` / ``role_shortlist_subtitle`` — optional mrkdwn lines for the only-role intro.
+
+    ``notion_tag_shortlist`` — People & Tags filter (``SSOE+SOE``, ``DPM``, ``SOE``) for call-support style
+    narrow lists; mutually exclusive with ``only_role`` in normal callers.
+
+    ``scoping_so_handler`` — pre-sales SO bench: drop people over the scoping slot cap or with **AT_RISK**
+    projects (see ``decision_logic.yaml`` → ``scoping``).
+
+    ``role_shortlist_compact`` — ``only_role`` shortlists render *Primary* + *Alternates* (1 + 2) instead of full sub-bands.
 
     ``_consistency_sink`` — optional list used by :func:`build_team_capacity_state` to capture
     name sets for Message 1 vs role-bucket (Message 2) regression tests; not for production callers.
@@ -739,8 +840,12 @@ def build_team_capacity_markdown(
 
         if pr in ("soe", "dpm"):
             if not csv_loaded:
+                if scoping_so_handler and not scoping_handler_so_eligible(r, cfg):
+                    continue
                 so_rows.append(pair)
-            elif rec and is_so(rec.so_status):
+            elif rec and so_eligibility_class(rec, 2) in ("primary", "stretch"):
+                if scoping_so_handler and not scoping_handler_so_eligible(r, cfg):
+                    continue
                 so_rows.append(pair)
 
     ps = project_staffing_rows
@@ -752,6 +857,7 @@ def build_team_capacity_markdown(
         subtitle: str = "",
         gate_tier: int = 2,
         max_listed: int = 40,
+        sort_so_bench: bool = False,
     ) -> list[str]:
         from staffing_agent.decision.team_template import (
             TEAM_CAPACITY_SUBBAND_HEADER,
@@ -778,10 +884,24 @@ def build_team_capacity_markdown(
             buckets[sk].append((r, lb))
 
         def sort_in_bucket(items: list[tuple[dict[str, Any], Band]]) -> list[tuple[dict[str, Any], Band]]:
-            return sorted(
-                items,
-                key=lambda it: (_active_project_count(it[0]), name_value(it[0]).lower()),
-            )
+            def sk(it: tuple[dict[str, Any], Band]) -> tuple:
+                r = it[0]
+                base_tail = (_active_project_count(r), name_value(r).lower())
+                if not sort_so_bench:
+                    return base_tail
+                em0 = (email_value(r) or "").strip().lower()
+                rec0 = staffing.get(em0) if em0 else None
+                pr0 = project_role_norm(r)
+                sub = 0
+                if rec0 and pr0 in ("soe", "dpm"):
+                    cl = so_eligibility_class(rec0, gate_tier)
+                    if cl == "stretch":
+                        sub = 1
+                    elif cl == "ineligible":
+                        sub = 2
+                return (sub, *base_tail)
+
+            return sorted(items, key=sk)
 
         for key in TEAM_CAPACITY_SUBBAND_ORDER:
             group = buckets[key]
@@ -833,7 +953,7 @@ def build_team_capacity_markdown(
                 _dedupe_pairs(so_rows),
                 2,
                 "SO (SoE/DPM with confirmed SO status)",
-                "_Accountable SO pool._",
+                "_Confirmed **SO** first; **can be SO** after (same eligibility bar), stretch fallback._",
             ),
             "soe": (
                 _dedupe_pairs(soe_rows),
@@ -852,12 +972,39 @@ def build_team_capacity_markdown(
             "se": (_dedupe_pairs(se_rows), 4, "SE / Software Engineer", "_SE snapshot._"),
         }
         pairs, gt, title, sub = role_map[orl]
+        title_line = role_shortlist_title or "*Staffing — role shortlist*"
+        sub_line = (
+            role_shortlist_subtitle
+            or "_Narrow ask (no project tier in Phase B). For a full team layout, add tier + scope or ask for *team capacity*._"
+        )
         intro = [
-            "*Staffing — role shortlist*",
-            "_Narrow ask (no project tier in Phase B). For a full team layout, add tier + scope or ask for *team capacity*._",
+            title_line,
+            sub_line,
             "",
         ]
-        body_lines = intro + fmt_section(title, pairs, subtitle=sub, gate_tier=gt, max_listed=40)
+        if role_shortlist_compact:
+            section_lines = _fmt_role_shortlist_compact(
+                title,
+                pairs,
+                subtitle=sub,
+                gate_tier=gt,
+                ps_rows=ps,
+                cfg=cfg,
+                staffing=staffing,
+                primary_n=1,
+                alternate_n=2,
+                sort_so_bench=(orl == "so"),
+            )
+        else:
+            section_lines = fmt_section(
+                title,
+                pairs,
+                subtitle=sub,
+                gate_tier=gt,
+                max_listed=40,
+                sort_so_bench=(orl == "so"),
+            )
+        body_lines = intro + section_lines
         req_roles = _team_capacity_required_roles(only_role)
         onboarding_emails = {
             p.email
@@ -871,6 +1018,48 @@ def build_team_capacity_markdown(
             body_lines.append("")
             body_lines.append(foot)
         return ["\n".join(body_lines)]
+
+    ntags_cs = normalize_call_support_role_tags(notion_tag_shortlist or [])
+    if ntags_cs:
+        matched_nt: list[tuple[dict[str, Any], Band]] = []
+        for r in usable:
+            em = (email_value(r) or "").strip().lower()
+            rec = staffing.get(em) if em else None
+            if rec and record_matches_any_call_support_tag(rec.role_tag, ntags_cs):
+                matched_nt.append((r, _classify_label(r)))
+        pairs_nt = _dedupe_pairs(matched_nt)
+        tag_line = ", ".join(ntags_cs)
+        intro_nt = [
+            "*Call support — tagged roles*",
+            f"_People & Tags filter:_ {tag_line}",
+            "",
+        ]
+        body_nt = intro_nt + fmt_section(
+            "Tagged pool (capacity snapshot)",
+            pairs_nt,
+            subtitle="_Slices chosen in Phase B (`call_support_role_tags`)._",
+            gate_tier=3,
+            max_listed=80,
+        )
+        req_nt: set[str] = set()
+        for t in ntags_cs:
+            if t == "DPM":
+                req_nt.add("dpm")
+            if t in ("SSOE+SOE", "SOE"):
+                req_nt.add("soe")
+        req_roles_nt = frozenset(req_nt) if req_nt else frozenset({"soe", "dpm"})
+        onboarding_emails_nt = {
+            p.email
+            for p in exr.excluded
+            if "onboarding" in (p.comment or "").lower()
+            and project_roles_for_notion_tag(p.role_tag) & req_roles_nt
+        }
+        start_dates_nt = fetch_start_dates(onboarding_emails_nt) if onboarding_emails_nt else None
+        foot_nt = format_excluded_comment_block(exr, req_roles_nt, start_dates=start_dates_nt)
+        if foot_nt:
+            body_nt.append("")
+            body_nt.append(foot_nt)
+        return ["\n".join(body_nt)]
 
     def free_strict_ok(
         r: dict[str, Any],
@@ -1237,8 +1426,9 @@ def build_team_capacity_markdown(
     section_blocks.append("\n".join(fmt_section(
         "SO (SoE/DPM with confirmed SO status)",
         so_d,
-        subtitle="_Accountable SO pool (exact SO status in People & Tags, not “can be SO”)._",
+        subtitle="_Confirmed **SO** first; **can be SO** listed after when they pass the same tier bar._",
         gate_tier=2,
+        sort_so_bench=True,
     )))
     section_blocks.append("\n".join(fmt_section(
         "SoE / SSoE (`project_role` = soe)",
@@ -1290,6 +1480,11 @@ def build_team_capacity_state(
     decision_cfg: Optional[Mapping[str, Any]] = None,
     project_staffing_rows: Optional[list[dict[str, Any]]] = None,
     only_role: Optional[str] = None,
+    role_shortlist_title: Optional[str] = None,
+    role_shortlist_subtitle: Optional[str] = None,
+    notion_tag_shortlist: Optional[list[str]] = None,
+    scoping_so_handler: bool = False,
+    role_shortlist_compact: bool = False,
 ) -> TeamCapacityState:
     """Same render as :func:`build_team_capacity_markdown`, plus name sets for cross-message checks."""
     sink: list[tuple[frozenset[str], frozenset[str]]] = []
@@ -1298,6 +1493,11 @@ def build_team_capacity_state(
         decision_cfg=decision_cfg,
         project_staffing_rows=project_staffing_rows,
         only_role=only_role,
+        role_shortlist_title=role_shortlist_title,
+        role_shortlist_subtitle=role_shortlist_subtitle,
+        notion_tag_shortlist=notion_tag_shortlist,
+        scoping_so_handler=scoping_so_handler,
+        role_shortlist_compact=role_shortlist_compact,
         _consistency_sink=sink,
     )
     if sink:
@@ -1325,6 +1525,11 @@ def fetch_capacity_rows(timeout_sec: int = 300) -> tuple[bool, list[dict[str, An
 def build_live_capacity_markdown(
     *,
     only_role: Optional[str] = None,
+    role_shortlist_title: Optional[str] = None,
+    role_shortlist_subtitle: Optional[str] = None,
+    notion_tag_shortlist: Optional[list[str]] = None,
+    scoping_so_handler: bool = False,
+    role_shortlist_compact: bool = False,
     timeout_sec: int = 300,
 ) -> list[str]:
     """Fetch Capacity + optional project_staffing; returns 1+ Slack mrkdwn messages (overview + detail chunks)."""
@@ -1345,7 +1550,61 @@ def build_live_capacity_markdown(
         decision_cfg=cfg,
         project_staffing_rows=ps_rows or None,
         only_role=only_role,
+        role_shortlist_title=role_shortlist_title,
+        role_shortlist_subtitle=role_shortlist_subtitle,
+        notion_tag_shortlist=notion_tag_shortlist,
+        scoping_so_handler=scoping_so_handler,
+        role_shortlist_compact=role_shortlist_compact,
     )
+
+
+def build_live_call_support_markdown(
+    *,
+    role_tags: list[str],
+    timeout_sec: int = 300,
+) -> list[str]:
+    """Single fetch: SO bench message + People & Tags slice from Phase B ``call_support_role_tags``."""
+    from staffing_agent.node3_project_staffing import fetch_project_staffing_rows
+
+    ok, rows, err = fetch_capacity_rows(timeout_sec=timeout_sec)
+    if not ok:
+        if err == "no_profile":
+            return [
+                "*Call support*\n_Set `DATABRICKS_PROFILE` and place the query in `sql/capacity.sql`._"
+            ]
+        if err == "no_sql":
+            return ["*Call support*\n_`sql/capacity.sql` is empty or too short._"]
+        return [f"*Call support*\n_Capacity query failed:_\n```{err[:1200]}```"]
+
+    cfg = load_decision_config()
+    ps_rows = fetch_project_staffing_rows(timeout_sec=min(timeout_sec, 180))
+    so_part = build_team_capacity_markdown(
+        rows,
+        decision_cfg=cfg,
+        project_staffing_rows=ps_rows or None,
+        only_role="so",
+        role_shortlist_title="*Call support — SO bench*",
+        role_shortlist_subtitle="_Accountable SO pool for ownership / chase on the opportunity._",
+    )
+    ntags = normalize_call_support_role_tags(role_tags)
+    if not ntags:
+        tag_part = [
+            "*Call support — tagged roles*\n"
+            "_Phase B did not list People & Tags slices — set `call_support_role_tags` "
+            "to SSOE+SOE, DPM, and/or SOE._"
+        ]
+    else:
+        tag_part = build_team_capacity_markdown(
+            rows,
+            decision_cfg=cfg,
+            project_staffing_rows=ps_rows or None,
+            notion_tag_shortlist=ntags,
+        )
+    out: list[str] = []
+    if so_part:
+        out.append(so_part[0])
+    out.extend(tag_part)
+    return out if out else tag_part
 
 
 def build_team_capacity_slack_reply(messages: list[dict[str, Any]], *, only_role: Optional[str] = None) -> list[str]:
